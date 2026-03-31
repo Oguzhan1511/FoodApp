@@ -13,6 +13,8 @@ import {
     Text,
     TouchableOpacity,
     View,
+    Linking,
+    Modal,
 } from 'react-native';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
@@ -42,6 +44,7 @@ export default function UserProfileScreen() {
     const [imageSource, setImageSource] = useState<string | null>(null);
     const [relationship, setRelationship] = useState<'none' | 'following' | 'friend' | 'pending'>('none');
     const [posts, setPosts] = useState<any[]>([]);
+    const [showRemoveFollowerModal, setShowRemoveFollowerModal] = useState(false);
 
     useEffect(() => {
         if (userId) {
@@ -61,8 +64,9 @@ export default function UserProfileScreen() {
         const fetchImage = async () => {
             const url = profile?.role === 'dietitian' ? profile?.profile_picture : profile?.avatar_url;
             if (!url) {
-                if (profile?.first_name) {
-                    setImageSource(`https://ui-avatars.com/api/?name=${profile.first_name}&background=800020&color=fff`);
+                const avatarName = profile?.ad || profile?.first_name;
+                if (avatarName) {
+                    setImageSource(`https://ui-avatars.com/api/?name=${avatarName}&background=800020&color=fff`);
                 } else {
                     setImageSource(null);
                 }
@@ -120,7 +124,12 @@ export default function UserProfileScreen() {
                     .single();
 
                 if (userData) {
-                    setProfile({ ...userData, role: 'user' });
+                    let businessData = null;
+                    if (userData.account_type === 'business') {
+                        const { data: bData } = await supabase.from('business_profiles').select('*').eq('id', userId).maybeSingle();
+                        if (bData) businessData = bData;
+                    }
+                    setProfile({ ...userData, role: 'user', businessData });
                 }
             }
         } catch (error) {
@@ -135,12 +144,19 @@ export default function UserProfileScreen() {
     const fetchStats = async () => {
         // ... Same logic as profile.tsx mostly, but for 'userId' ...
         try {
-            // Friend count
+            // Follower count (People following this user)
             const { count: friendCount } = await supabase
-                .from('friendships')
+                .from('user_follows')
                 .select('id', { count: 'exact', head: true })
-                .eq('status', 'accepted')
-                .or(`requester.eq.${userId},receiver.eq.${userId}`);
+                .eq('following_id', userId)
+                .eq('status', 'accepted');
+                
+            // Following count (People this user follows)
+            const { count: followingCount } = await supabase
+                .from('user_follows')
+                .select('id', { count: 'exact', head: true })
+                .eq('follower_id', userId)
+                .eq('status', 'accepted');
 
             // Followed Dietitians
             const { count: followingDietitianCount } = await supabase
@@ -160,7 +176,7 @@ export default function UserProfileScreen() {
             setStats(prev => ({
                 ...prev,
                 followers: followerCount,
-                following: (friendCount || 0) + (followingDietitianCount || 0)
+                following: (followingCount || 0) + (followingDietitianCount || 0)
             }));
         } catch (error) {
             console.log("Stats error:", error);
@@ -207,15 +223,16 @@ export default function UserProfileScreen() {
                 else setRelationship('none');
 
             } else {
-                // Check Friendship
+                // Check Following Status
                 const { data, error } = await supabase
-                    .from('friendships')
+                    .from('user_follows')
                     .select('*')
-                    .or(`and(requester.eq.${currentUser.id},receiver.eq.${userId}),and(requester.eq.${userId},receiver.eq.${currentUser.id})`)
+                    .eq('follower_id', currentUser.id)
+                    .eq('following_id', userId)
                     .single();
 
                 if (data) {
-                    if (data.status === 'accepted') setRelationship('friend');
+                    if (data.status === 'accepted') setRelationship('following');
                     else if (data.status === 'pending') setRelationship('pending');
                     else setRelationship('none');
                 } else {
@@ -233,9 +250,15 @@ export default function UserProfileScreen() {
         try {
             if (relationship === 'friend' || relationship === 'following' || relationship === 'pending') {
                 // Unfollow / Cancel Request / Remove Friend logic
+                let title = "Emin misiniz?";
+                let message = "Takibi bırakmak istiyor musunuz?";
+
+                if (relationship === 'friend') message = "Arkadaşlardan çıkarmak istiyor musunuz?";
+                else if (relationship === 'pending') message = "Arkadaşlık isteğini geri çekmek istiyor musunuz?";
+
                 Alert.alert(
-                    "Emin misiniz?",
-                    relationship === 'friend' ? "Arkadaşlardan çıkarmak istiyor musunuz?" : "Takibi bırakmak istiyor musunuz?",
+                    title,
+                    message,
                     [
                         { text: "Vazgeç", style: "cancel" },
                         {
@@ -245,10 +268,43 @@ export default function UserProfileScreen() {
                                 if (profile.role === 'dietitian') {
                                     await supabase.from('dietitian_follows').delete().eq('follower_id', currentUser.id).eq('dietitian_id', userId);
                                 } else {
-                                    await supabase.from('friendships').delete().or(`and(requester.eq.${currentUser.id},receiver.eq.${userId}),and(requester.eq.${userId},receiver.eq.${currentUser.id})`);
+                                    await supabase.from('user_follows')
+                                        .delete()
+                                        .eq('follower_id', currentUser.id)
+                                        .eq('following_id', userId);
+
+                                    // Handle unfollow or cancel request
+                                    // Optionally delete the notification if it was pending
+                                    if (relationship === 'pending') {
+                                        await supabase.from('notifications')
+                                            .delete()
+                                            .eq('actor_id', currentUser.id)
+                                            .eq('user_id', userId)
+                                            .eq('type', 'follow_request');
+                                        
+                                        setRelationship('none');
+                                        fetchStats(); // refresh stats
+                                    } else {
+                                        const oldRel = relationship;
+                                        setRelationship('none');
+                                        fetchStats(); // refresh stats
+
+                                        // Only prompt to remove follower if we were actually following them
+                                        if (oldRel === 'following' || oldRel === 'friend') {
+                                            const { data: theyFollowMe } = await supabase
+                                                .from('user_follows')
+                                                .select('id')
+                                                .eq('follower_id', userId)
+                                                .eq('following_id', currentUser.id)
+                                                .eq('status', 'accepted')
+                                                .maybeSingle();
+
+                                            if (theyFollowMe) {
+                                                setShowRemoveFollowerModal(true);
+                                            }
+                                        }
+                                    }
                                 }
-                                setRelationship('none');
-                                fetchStats(); // refresh stats
                             }
                         }
                     ]
@@ -262,10 +318,33 @@ export default function UserProfileScreen() {
                 if (error) throw error;
                 setRelationship('following');
             } else {
-                const { error } = await supabase.from('friendships').insert([{ requester: currentUser.id, receiver: userId, status: 'pending' }]);
+                const isPublic = !profile.is_private;
+                const newStatus = isPublic ? 'accepted' : 'pending';
+                // Veritabanı CHECK kısıtlamasına (notifications_type_check) takılmamak için eski tipleri kullanıyoruz.
+                const notifType = isPublic ? 'friend_accept' : 'friend_request';
+
+                const { error } = await supabase.from('user_follows').insert([{ 
+                    follower_id: currentUser.id, 
+                    following_id: userId, 
+                    status: newStatus 
+                }]);
                 if (error) throw error;
-                setRelationship('pending');
-                Alert.alert("Başarılı", "Arkadaşlık isteği gönderildi.");
+
+                // Trigger Notification
+                const { error: notifError } = await supabase.from('notifications').insert([{
+                    user_id: userId,
+                    actor_id: currentUser.id,
+                    type: notifType,
+                    content: isPublic ? 'direct_follow' : null
+                }]);
+                
+                if (notifError) {
+                    console.error("NOTIF ERROR:", notifError);
+                    Alert.alert("Bildirim Hatası", notifError.message);
+                }
+
+                setRelationship(isPublic ? 'following' : 'pending');
+                Alert.alert("Başarılı", isPublic ? "Kullanıcıyı takip etmeye başladınız." : "Takip isteği gönderildi.");
             }
             fetchStats();
 
@@ -288,12 +367,27 @@ export default function UserProfileScreen() {
             case 'friend': return 'Arkadaşsınız';
             case 'following': return 'Takip Ediliyor';
             case 'pending': return 'İstek Gönderildi';
-            default: return profile?.role === 'dietitian' ? 'Takip Et' : 'Arkadaş Ekle';
+            default: return 'Takip Et';
         }
     };
 
     const getButtonColor = () => {
         return relationship === 'none' ? THEME_COLOR : '#ccc';
+    };
+
+    const handleRemoveFollower = async () => {
+        try {
+            await supabase
+                .from('user_follows')
+                .delete()
+                .eq('follower_id', userId)
+                .eq('following_id', currentUser?.id);
+            fetchStats();
+            setShowRemoveFollowerModal(false);
+            Alert.alert("Başarılı", "Kullanıcı takipçilerinizden çıkarıldı.");
+        } catch (error) {
+            console.error("Remove follower error", error);
+        }
     };
 
     const getButtonTextColor = () => {
@@ -322,7 +416,7 @@ export default function UserProfileScreen() {
                     <Ionicons name="arrow-back" size={26} color={primaryColor} />
                 </TouchableOpacity>
                 <Text style={[styles.headerUsername, { color: textColor }]}>
-                    {profile?.username ? `@${profile.username}` : 'Profil'}
+                    {userId === currentUser?.id ? 'Senin Profilin' : (profile?.username ? profile.username.replace(/^@/, '') : 'Profil')}
                 </Text>
                 <View style={{ width: 26 }} />
             </View>
@@ -355,7 +449,9 @@ export default function UserProfileScreen() {
                 </View>
 
                 <View style={styles.bioContainer}>
-                    <Text style={[styles.fullName, { color: textColor }]}>{profile?.first_name} {profile?.last_name}</Text>
+                    <Text style={[styles.fullName, { color: textColor }]}>
+                        {userId === currentUser?.id ? `${currentUser?.ad} ${currentUser?.soyad}` : `${profile?.ad || profile?.first_name || ''} ${profile?.soyad || profile?.last_name || ''}`.trim()}
+                    </Text>
                     {profile?.role === 'dietitian' ? (
                         <View>
                             <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.location}</Text>
@@ -367,11 +463,39 @@ export default function UserProfileScreen() {
                     )}
                 </View>
 
+                {profile?.account_type === 'business' && (
+                    <View style={styles.businessButtonsContainer}>
+                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => {
+                            const address = profile?.businessData?.address;
+                            if (address) {
+                                const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+                                Linking.openURL(url).catch(() => Alert.alert('Hata', 'Harita uygulaması açılamadı.'));
+                            } else {
+                                Alert.alert('Bilgi', 'İşletme henüz adres bilgisi girmemiş.');
+                            }
+                        }}>
+                            <Ionicons name="location-outline" size={18} color={primaryColor} />
+                            <Text style={[styles.businessButtonText, { color: textColor }]}>Yol Tarifi</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => {
+                            const phone = profile?.businessData?.phone_number;
+                            if (phone) {
+                                // Sometimes phones need cleaning but let's just pass it
+                                Linking.openURL(`tel:${phone}`).catch(() => Alert.alert('Hata', 'Arama başlatılamadı.'));
+                            } else {
+                                Alert.alert('Bilgi', 'İşletme henüz iletişim numarası girmemiş.');
+                            }
+                        }}>
+                            <Ionicons name="call-outline" size={18} color={primaryColor} />
+                            <Text style={[styles.businessButtonText, { color: textColor }]}>İletişim</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
+
                 <View style={styles.actionButtons}>
                     <TouchableOpacity
                         style={[styles.followButton, { backgroundColor: getButtonColor(), borderColor: primaryColor }]}
                         onPress={handleFollowAction}
-                        disabled={relationship === 'pending' || relationship === 'following' || relationship === 'friend'}
                     >
                         <Text style={[styles.buttonText, { color: getButtonTextColor() }]}>{getButtonText()}</Text>
                     </TouchableOpacity>
@@ -416,6 +540,29 @@ export default function UserProfileScreen() {
                     )}
                 </View>
             </ScrollView>
+
+            {/* Remove Follower Modal */}
+            <Modal
+                visible={showRemoveFollowerModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowRemoveFollowerModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={[styles.bottomSheet, { backgroundColor: bgColor }]}>
+                        <View style={styles.sheetHeader}>
+                            <Text style={[styles.sheetTitle, { color: textColor }]}>Takipçiyi Çıkar</Text>
+                            <TouchableOpacity onPress={() => setShowRemoveFollowerModal(false)}>
+                                <Ionicons name="close" size={24} color={textColor} />
+                            </TouchableOpacity>
+                        </View>
+                            {profile?.username ? profile.username.replace(/^@/, '') : 'Kullanıcı'} sizi takip etmeye devam ediyor. Onu takipçilerinizden de çıkarmak ister misiniz?
+                        <TouchableOpacity style={[styles.removeButton, { backgroundColor: '#ff3b30' }]} onPress={handleRemoveFollower}>
+                            <Text style={styles.removeButtonText}>Takipten Çıkar</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -442,9 +589,30 @@ const styles = StyleSheet.create({
     bioContainer: { paddingHorizontal: 20, marginTop: 5 },
     fullName: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 4 },
     bioText: { fontSize: 14, color: '#444', lineHeight: 20 },
-    actionButtons: { paddingHorizontal: 20, marginTop: 20 },
+    actionButtons: { paddingHorizontal: 20, marginTop: 15 },
     followButton: { backgroundColor: THEME_COLOR, padding: 12, borderRadius: 10, alignItems: 'center' },
     followButtonText: { fontWeight: 'bold', color: '#fff' },
+    businessButtonsContainer: {
+        flexDirection: 'row',
+        paddingHorizontal: 20,
+        marginTop: 15,
+        justifyContent: 'space-between',
+        gap: 10
+    },
+    businessButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 10,
+        borderRadius: 8,
+        borderWidth: 1,
+    },
+    businessButtonText: {
+        marginLeft: 6,
+        fontWeight: 'bold',
+        fontSize: 14
+    },
     emptyContainer: { alignItems: 'center', marginTop: 60, paddingBottom: 40 },
     emptyText: { color: '#999', marginTop: 10, fontSize: 14 },
     postsGrid: {
@@ -513,5 +681,12 @@ const styles = StyleSheet.create({
         fontSize: 14,
         marginTop: 5,
         textAlign: 'center',
-    }
+    },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+    bottomSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40, borderTopWidth: 1, borderColor: '#333' },
+    sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+    sheetTitle: { fontSize: 18, fontWeight: 'bold' },
+    sheetMessage: { fontSize: 14, marginBottom: 20, lineHeight: 20 },
+    removeButton: { padding: 15, borderRadius: 10, alignItems: 'center' },
+    removeButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
 });

@@ -4,6 +4,10 @@ import React, { createContext, ReactNode, useContext, useState } from 'react';
 interface User {
   id: string;
   username: string;
+  ad?: string;
+  soyad?: string;
+  avatar_url?: string | null;
+  role?: string;
 }
 
 // Context tipi tanımı
@@ -11,6 +15,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (userData: User) => void;
+  updateUser: (updates: Partial<User>) => void;
   logout: () => void;
 }
 
@@ -26,13 +31,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(userData);
   };
 
+  // Kullanıcı verilerini güncellemek için fonksiyon
+  const updateUser = (updates: Partial<User>) => {
+    setUser(prev => prev ? { ...prev, ...updates } : null);
+  };
+
   // Çıkış yapıldığında çağrılacak fonksiyon
   const logout = () => {
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, updateUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

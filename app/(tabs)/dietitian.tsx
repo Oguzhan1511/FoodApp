@@ -258,7 +258,7 @@ export default function DietitianScreen() {
               {item.first_name} {item.last_name}
               {item.is_verified && <Ionicons name="checkmark-circle" size={16} color="#4CAF50" style={{ marginLeft: 5 }} />}
             </Text>
-            <Text style={[styles.username, { color: subTextColor }]}>@{item.username}</Text>
+            <Text style={[styles.username, { color: subTextColor }]}>{item.username ? item.username.replace(/^@/, '') : 'Diyetisyen'}</Text>
           </View>
         </View>
 

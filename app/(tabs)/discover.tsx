@@ -8,6 +8,7 @@ import {
     FlatList,
     Keyboard,
     RefreshControl,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -52,6 +53,7 @@ export default function DiscoverScreen() {
 
     const [searchQuery, setSearchQuery] = useState('');
     const [results, setResults] = useState<UserProfile[]>([]);
+    const [postResults, setPostResults] = useState<DiscoverPost[]>([]);
     const [loading, setLoading] = useState(false);
 
     const [feedPosts, setFeedPosts] = useState<DiscoverPost[]>([]);
@@ -135,26 +137,62 @@ export default function DiscoverScreen() {
 
         if (text.length < 2) {
             setResults([]);
+            setPostResults([]);
             return;
         }
 
         setLoading(true);
         try {
-            let query = supabase
+            // Kullanıcı sorgusu
+            const userQuery = supabase
                 .from('profiles')
-                .select('id, username, ad, soyad, avatar_url')
-                .or(`username.ilike.%${text}%,ad.ilike.%${text}%,soyad.ilike.%${text}%`)
-                .neq('id', user?.id || '');
+                .select('id, username, ad, soyad, avatar_url, bio')
+                .or(`username.ilike.%${text}%,ad.ilike.%${text}%,soyad.ilike.%${text}%,bio.ilike.%${text}%`)
+                .neq('id', user?.id || '')
+                .limit(10);
 
-            const { data, error } = await query;
+            // Post / Etiket sorgusu (Sadece etiketlerde arasın)
+            const postQuery = supabase
+                .from('posts')
+                .select('*')
+                .ilike('tags', `%${text}%`)
+                .order('created_at', { ascending: false })
+                .limit(21); // 3'lü grid için 21 iyi
 
-            if (error) {
-                console.error("Search error:", error);
-            } else {
-                setResults(data || []);
+            const [userRes, postRes] = await Promise.all([userQuery, postQuery]);
+
+            let finalUsers = userRes.data || [];
+            let returnedPosts = postRes.data || [];
+
+            // Eğer gönderiler bulunduysa, o gönderileri atan kullanıcıları da Keşfet listesine ekleyelim
+            if (returnedPosts.length > 0) {
+                // Gönderi sahiplerinin ID'lerini benzersiz bir listeye alalım
+                const postCreatorIds = [...new Set(returnedPosts.map(p => p.user_id))];
+                
+                // Zaten 'Kullanıcılar' listesinde (finalUsers) olmayanları bulalım ve kendimiz olmasın
+                const missingUserIds = postCreatorIds.filter(
+                    id => id !== user?.id && !finalUsers.some(u => u.id === id)
+                );
+
+                if (missingUserIds.length > 0) {
+                    // Eksik kullanıcıların profil detaylarını çekelim
+                    const { data: missingProfiles } = await supabase
+                        .from('profiles')
+                        .select('id, username, ad, soyad, avatar_url, bio')
+                        .in('id', missingUserIds)
+                        .limit(10); // Performans için sınır koyabiliriz
+
+                    if (missingProfiles) {
+                        finalUsers = [...finalUsers, ...missingProfiles];
+                    }
+                }
             }
+
+            setResults(finalUsers);
+            setPostResults(returnedPosts);
+
         } catch (error) {
-            console.error("Search exception:", error);
+            console.error("Arama exception:", error);
         } finally {
             setLoading(false);
         }
@@ -177,7 +215,7 @@ export default function DiscoverScreen() {
             />
             <View>
                 <Text style={[styles.resultName, { color: textColor }]}>{item.ad} {item.soyad}</Text>
-                <Text style={[styles.resultUsername, { color: subTextColor }]}>@{item.username}</Text>
+                <Text style={[styles.resultUsername, { color: subTextColor }]}>{item.username ? item.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={subTextColor} style={{ marginLeft: 'auto' }} />
         </TouchableOpacity>
@@ -211,7 +249,7 @@ export default function DiscoverScreen() {
                     autoCapitalize="none"
                 />
                 {searchQuery.length > 0 && (
-                    <TouchableOpacity onPress={() => { setSearchQuery(''); setResults([]); Keyboard.dismiss(); }}>
+                    <TouchableOpacity onPress={() => { setSearchQuery(''); setResults([]); setPostResults([]); Keyboard.dismiss(); }}>
                         <Ionicons name="close-circle" size={20} color={subTextColor} />
                     </TouchableOpacity>
                 )}
@@ -223,16 +261,29 @@ export default function DiscoverScreen() {
                 loading ? (
                     <ActivityIndicator size="large" color={primaryColor} style={{ marginTop: 20 }} />
                 ) : (
-                    <FlatList
-                        key="search-list"
-                        data={results}
-                        keyExtractor={item => item.id}
-                        renderItem={renderResultItem}
-                        contentContainerStyle={{ padding: 15 }}
-                        ListEmptyComponent={
-                            <Text style={[styles.emptyText, { color: subTextColor }]}>Kullanıcı bulunamadı.</Text>
-                        }
-                    />
+                    <ScrollView style={{ flex: 1 }}>
+                        {results.length > 0 && (
+                            <View style={{ padding: 15 }}>
+                                <Text style={{ fontSize: 16, fontWeight: 'bold', color: textColor, marginBottom: 10 }}>Kullanıcılar</Text>
+                                {results.map(item => (
+                                    <View key={item.id}>{renderResultItem({ item })}</View>
+                                ))}
+                            </View>
+                        )}
+                        {postResults.length > 0 && (
+                            <View style={{ paddingHorizontal: 0 }}>
+                                <Text style={{ fontSize: 16, fontWeight: 'bold', color: textColor, marginBottom: 10, paddingHorizontal: 15 }}>İlgili Gönderiler</Text>
+                                <View style={styles.postsGrid}>
+                                    {postResults.map(item => (
+                                        <View key={item.id}>{renderPostItem({ item })}</View>
+                                    ))}
+                                </View>
+                            </View>
+                        )}
+                        {results.length === 0 && postResults.length === 0 && (
+                            <Text style={[styles.emptyText, { color: subTextColor }]}>Sonuç bulunamadı.</Text>
+                        )}
+                    </ScrollView>
                 )
             ) : (
                 // DISCOVER GRID
@@ -332,6 +383,10 @@ const styles = StyleSheet.create({
     // GRID STYLES
     gridContainer: {
         paddingBottom: 20,
+    },
+    postsGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
     },
     gridItem: {
         width: width / 3,

@@ -46,32 +46,36 @@ export default function CreateChatScreen() {
     const fetchFriends = async () => {
         try {
             const { data, error } = await supabase
-                .from('friendships')
-                .select(`
-                    requester:requester(id, username, ad, soyad, avatar_url),
-                    receiver:receiver(id, username, ad, soyad, avatar_url)
-                `)
+                .from('user_follows')
+                .select('follower_id, following_id')
                 .eq('status', 'accepted')
-                .or(`requester.eq.${user?.id},receiver.eq.${user?.id}`);
+                .or(`follower_id.eq.${user?.id},following_id.eq.${user?.id}`);
 
             if (error) throw error;
 
-            const formatted = data.map((rel: any) => {
-                const friend = rel.requester.id === user?.id ? rel.receiver : rel.requester;
-                return {
-                    id: friend.id,
-                    username: friend.username,
-                    name: `${friend.ad} ${friend.soyad}`,
-                    avatar_url: friend.avatar_url
-                };
-            });
+            if (data && data.length > 0) {
+                const uniqueIds = new Set<string>();
+                data.forEach((d: any) => {
+                    uniqueIds.add(d.follower_id === user?.id ? d.following_id : d.follower_id);
+                });
+                
+                const { data: profiles, error: pError } = await supabase
+                    .from('profiles')
+                    .select('id, username, ad, soyad, avatar_url')
+                    .in('id', Array.from(uniqueIds));
 
-            // Remove duplicates just in case
-            const uniqueFriends = formatted.filter((friend: any, index: number, self: any[]) =>
-                index === self.findIndex((t) => (t.id === friend.id))
-            );
+                if (pError) throw pError;
 
-            setFriends(uniqueFriends);
+                const formatted = (profiles || []).map((p: any) => ({
+                    id: p.id,
+                    username: p.username,
+                    name: `${p.ad} ${p.soyad}`,
+                    avatar_url: p.avatar_url
+                }));
+                setFriends(formatted);
+            } else {
+                setFriends([]);
+            }
         } catch (error) {
             console.error("Arkadaşları çekme hatası:", error);
         } finally {
@@ -205,7 +209,7 @@ export default function CreateChatScreen() {
                             />
                             <View style={styles.userInfo}>
                                 <Text style={[styles.userName, { color: textColor }]}>{friend.name}</Text>
-                                <Text style={[styles.userHandle, { color: subTextColor }]}>@{friend.username}</Text>
+                                <Text style={[styles.userHandle, { color: subTextColor }]}>{friend.username ? friend.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                             </View>
                             <View style={[styles.checkbox, { borderColor: isSelected ? primaryColor : subTextColor, backgroundColor: isSelected ? primaryColor : 'transparent' }]}>
                                 {isSelected && <Ionicons name="checkmark" size={16} color="#fff" />}

@@ -181,7 +181,7 @@ export default function GroupDetailScreen() {
                         />
                         <View style={{ flex: 1 }}>
                             <Text style={[styles.memberName, { color: textColor }]}>{m.user.ad} {m.user.soyad}</Text>
-                            <Text style={[styles.memberUser, { color: subTextColor }]}>@{m.user.username}</Text>
+                            <Text style={[styles.memberUser, { color: subTextColor }]}>{m.user.username ? m.user.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                         </View>
                         {m.user_id === user?.id && <Text style={{ color: THEME_COLOR, fontSize: 12 }}>Siz</Text>}
                     </View>

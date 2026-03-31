@@ -9,44 +9,45 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView, Platform,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text, TextInput, TouchableOpacity,
   View
 } from 'react-native';
 
-// DOSYA YOLLARINI KONTROL ET!
 import { auth } from './services/firebaseConfig';
 import { supabase } from './services/supabaseConfig';
 
 import { Ionicons } from '@expo/vector-icons';
-import * as AuthSession from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
+import { useAuth } from './AuthContext';
+import { useTheme } from './ThemeContext';
 
 WebBrowser.maybeCompleteAuthSession();
-
-const THEME_COLOR = '#800020';
 
 export default function RegisterScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<'user' | 'dietitian'>('user');
+  const [accountType, setAccountType] = useState<'personal' | 'business'>('personal');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { login } = useAuth();
+  const { theme } = useTheme();
 
-  // Google Auth Yapılandırması
+  const isDark = theme === 'dark';
+
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
     androidClientId: 'GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
-    iosClientId: 'GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com',
-    redirectUri: AuthSession.makeRedirectUri({
-      scheme: 'foodapp', 
-    }),
+    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
+    webClientId: 'GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com', // Yeni Web ID buraya gelecek
   });
 
-  // Başarılı/Hatalı Yanıtları Dinle
   useEffect(() => {
     if (response?.type === 'success') {
       handleGoogleLogin(response.params.id_token);
@@ -62,8 +63,7 @@ export default function RegisterScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      // Supabase Bağlantı Kontrolü ve Kayıt
-      const { data: profile, error: fetchError } = await supabase
+      const { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.uid)
@@ -74,10 +74,10 @@ export default function RegisterScreen() {
         const { error: insertError } = await supabase
           .from('profiles')
           .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }]);
-        
+
         if (insertError) throw insertError;
       }
-      router.replace('/home');
+      router.replace('/(tabs)/home');
     } catch (err: any) {
       console.error("Google Login İşlem Hatası:", err.message);
       Alert.alert("Ağ Hatası", "Supabase sunucusuna ulaşılamadı. İnternetinizi kontrol edin.");
@@ -96,87 +96,296 @@ export default function RegisterScreen() {
     let firebaseUser = null;
 
     try {
-      // 1. Firebase Kaydı
       const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       firebaseUser = userCredential.user;
-      
-      // 2. Supabase profiles Tablosuna Kayıt
+
       const { error: sbError } = await supabase
         .from('profiles')
-        .insert([{ 
-          id: firebaseUser.uid, 
-          email: email.toLowerCase().trim(), 
-          username: username.toLowerCase().trim(), 
-          role: role 
+        .insert([{
+          id: firebaseUser.uid,
+          email: email.toLowerCase().trim(),
+          username: username.toLowerCase().trim(),
+          role: role,
+          account_type: accountType
         }]);
 
       if (sbError) {
-        // Supabase tarafında hata varsa Firebase kullanıcısını sil (Rollback)
         if (firebaseUser) await deleteUser(firebaseUser);
         throw sbError;
       }
 
-      // Başarılıysa yönlendir
+      login({
+        id: firebaseUser.uid,
+        username: username.toLowerCase().trim(),
+        role: role
+      });
+
       if (role === 'user') router.replace('/onboarding');
-      else router.push({ pathname: "/DietitianDetailsScreen", params: { uid: firebaseUser.uid, email, username }});
+      else router.push({ pathname: "/DietitianDetailsScreen", params: { uid: firebaseUser.uid, email, username } });
 
     } catch (error: any) {
       console.error("Kayıt Hatası Detayı:", error);
-      Alert.alert("Kayıt Başarısız", error.message || "Bir ağ hatası oluştu.");
+      console.error("Hata Kodu:", error.code);
+      console.error("Hata Mesajı:", error.message);
+
+      let errorMessage = "Bir ağ hatası oluştu.";
+      if (error.code === 'auth/email-already-in-use') errorMessage = "Bu e-posta adresi zaten kullanımda.";
+      if (error.code === 'auth/invalid-email') errorMessage = "Geçersiz e-posta adresi.";
+      if (error.code === 'auth/weak-password') errorMessage = "Şifre çok zayıf (en az 6 karakter olmalı).";
+      if (error.code === 'auth/operation-not-allowed') errorMessage = "E-posta/Şifre girişi Firebase panelinden aktif edilmemiş.";
+
+      Alert.alert("Kayıt Başarısız", errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContainer}>
-        <Text style={styles.title}>Foodap'a Katıl</Text>
-        
-        <View style={styles.form}>
-          <Text style={styles.label}>Kullanıcı Adı</Text>
-          <TextInput style={styles.input} placeholder="kullaniciadi" onChangeText={setUsername} autoCapitalize="none" />
-          
-          <TextInput style={styles.input} placeholder="E-posta" onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
-          <TextInput style={styles.input} placeholder="Şifre" onChangeText={setPassword} secureTextEntry />
+    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#000000' : '#FFFFFF' }]}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.flex}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={28} color={isDark ? '#FFF' : '#333'} />
+          </TouchableOpacity>
 
-          <View style={styles.roleContainer}>
-            <TouchableOpacity style={[styles.roleBtn, role === 'user' && styles.activeBtn]} onPress={() => setRole('user')}>
-              <Text style={role === 'user' ? styles.activeText : styles.btnText}>Kullanıcı</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.roleBtn, role === 'dietitian' && styles.activeBtn]} onPress={() => setRole('dietitian')}>
-              <Text style={role === 'dietitian' ? styles.activeText : styles.btnText}>Diyetisyen</Text>
-            </TouchableOpacity>
+          <View style={styles.header}>
+            <View style={[styles.headerIcon, { backgroundColor: isDark ? '#1a1a1a' : '#fff5f7' }]}>
+              <Ionicons name="person-add" size={32} color="#800020" />
+            </View>
+            <Text style={[styles.title, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>Hesap Oluştur</Text>
+            <Text style={[styles.subtitle, { color: isDark ? '#888' : '#666' }]}>FoodApp topluluğuna katılın.</Text>
           </View>
 
-          <TouchableOpacity style={styles.mainBtn} onPress={handleRegister} disabled={loading}>
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.mainBtnText}>Hesap Oluştur</Text>}
-          </TouchableOpacity>
-        </View>
+          <View style={styles.form}>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={[styles.input, {
+                  backgroundColor: isDark ? '#111' : '#F9F9F9',
+                  borderColor: isDark ? '#333' : '#F0F0F0',
+                  color: isDark ? '#FFF' : '#000'
+                }]}
+                placeholder="Kullanıcı Adı"
+                placeholderTextColor={isDark ? '#555' : '#AAA'}
+                onChangeText={setUsername}
+                autoCapitalize="none"
+              />
+            </View>
 
-        <TouchableOpacity style={styles.googleBtn} onPress={() => promptAsync()} disabled={!request || loading}>
-          <Ionicons name="logo-google" size={20} color="#DB4437" />
-          <Text style={styles.googleBtnText}>Google ile Devam Et</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </KeyboardAvoidingView>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={[styles.input, {
+                  backgroundColor: isDark ? '#111' : '#F9F9F9',
+                  borderColor: isDark ? '#333' : '#F0F0F0',
+                  color: isDark ? '#FFF' : '#000'
+                }]}
+                placeholder="E-posta"
+                placeholderTextColor={isDark ? '#555' : '#AAA'}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={[styles.input, {
+                  backgroundColor: isDark ? '#111' : '#F9F9F9',
+                  borderColor: isDark ? '#333' : '#F0F0F0',
+                  color: isDark ? '#FFF' : '#000'
+                }]}
+                placeholder="Şifre"
+                placeholderTextColor={isDark ? '#555' : '#AAA'}
+                onChangeText={setPassword}
+                secureTextEntry
+              />
+            </View>
+
+            <View style={styles.roleContainer}>
+              <TouchableOpacity
+                style={[styles.roleBtn, { flex: 0.32, borderColor: isDark ? '#333' : '#F0F0F0' }, role === 'user' && accountType === 'personal' && styles.activeBtn]}
+                onPress={() => { setRole('user'); setAccountType('personal'); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.btnText, { color: role === 'user' && accountType === 'personal' ? '#FFF' : (isDark ? '#888' : '#444') }]}>Bireysel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.roleBtn, { flex: 0.32, borderColor: isDark ? '#333' : '#F0F0F0' }, role === 'user' && accountType === 'business' && styles.activeBtn]}
+                onPress={() => { setRole('user'); setAccountType('business'); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.btnText, { color: role === 'user' && accountType === 'business' ? '#FFF' : (isDark ? '#888' : '#444') }]}>İşletme</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.roleBtn, { flex: 0.32, borderColor: isDark ? '#333' : '#F0F0F0' }, role === 'dietitian' && styles.activeBtn]}
+                onPress={() => { setRole('dietitian'); setAccountType('personal'); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.btnText, { color: role === 'dietitian' ? '#FFF' : (isDark ? '#888' : '#444') }]}>Diyetisyen</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.button, styles.primaryButton, !isDark && styles.shadow, loading && { opacity: 0.7 }]}
+              onPress={handleRegister}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Hesap Oluştur</Text>}
+            </TouchableOpacity>
+
+            <View style={styles.divider}>
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#222' : '#EEE' }]} />
+              <Text style={[styles.dividerText, { color: isDark ? '#444' : '#BBB' }]}>veya</Text>
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#222' : '#EEE' }]} />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.googleBtn, {
+                backgroundColor: isDark ? '#111' : '#FFF',
+                borderColor: isDark ? '#333' : '#EEE'
+              }]}
+              onPress={() => promptAsync()}
+              disabled={!request || loading}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="logo-google" size={20} color={isDark ? '#FFF' : '#DB4437'} />
+              <Text style={[styles.googleBtnText, { color: isDark ? '#FFF' : '#555' }]}>Google ile Devam Et</Text>
+            </TouchableOpacity>
+
+            <View style={styles.footer}>
+              <Text style={[styles.footerText, { color: isDark ? '#666' : '#999' }]}>Zaten hesabın var mı? </Text>
+              <TouchableOpacity onPress={() => router.push('/login')}>
+                <Text style={[styles.linkText, { color: isDark ? '#FFF' : '#800020' }]}>Giriş Yap</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  scrollContainer: { padding: 25, flexGrow: 1, justifyContent: 'center' },
-  title: { fontSize: 32, fontWeight: 'bold', color: THEME_COLOR, marginBottom: 30, textAlign: 'center' },
+  container: { flex: 1 },
+  flex: { flex: 1 },
+  scrollContainer: { paddingHorizontal: 40, paddingBottom: 60, paddingTop: 100, flexGrow: 1, justifyContent: 'flex-start' },
+  backButton: {
+    width: 44,
+    height: 44,
+    marginLeft: -10,
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  header: {
+    marginBottom: 40,
+    alignItems: 'center',
+  },
+  headerIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
+  },
+  title: {
+    fontSize: 34,
+    fontWeight: '800',
+    letterSpacing: -1,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 17,
+    textAlign: 'center',
+    opacity: 0.7,
+  },
   form: { width: '100%' },
-  label: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 5 },
-  input: { borderWidth: 1, borderColor: '#eee', padding: 15, borderRadius: 12, marginBottom: 15, backgroundColor: '#f9f9f9' },
-  roleContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  roleBtn: { flex: 0.48, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: THEME_COLOR, alignItems: 'center' },
-  activeBtn: { backgroundColor: THEME_COLOR },
-  btnText: { color: THEME_COLOR, fontWeight: 'bold' },
-  activeText: { color: '#fff', fontWeight: 'bold' },
-  mainBtn: { backgroundColor: THEME_COLOR, padding: 18, borderRadius: 12, alignItems: 'center' },
-  mainBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  googleBtn: { flexDirection: 'row', backgroundColor: '#fff', padding: 16, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#ddd', marginTop: 20 },
-  googleBtnText: { marginLeft: 10, fontWeight: 'bold', color: '#555' }
+  inputWrapper: {
+    marginBottom: 16,
+  },
+  input: {
+    height: 60,
+    borderRadius: 20,
+    paddingHorizontal: 20,
+    fontSize: 16,
+    borderWidth: 1.5,
+  },
+  roleContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 32, marginTop: 12 },
+  roleBtn: {
+    flex: 0.48,
+    height: 56,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  activeBtn: { backgroundColor: '#800020', borderColor: '#800020' },
+  btnText: { fontSize: 15, fontWeight: '700' },
+  button: {
+    height: 60,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  primaryButton: {
+    backgroundColor: '#800020',
+  },
+  shadow: {
+    shadowColor: '#800020',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 15,
+    elevation: 4,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 32,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    paddingHorizontal: 16,
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  googleBtn: {
+    flexDirection: 'row',
+    height: 60,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  googleBtnText: { marginLeft: 12, fontSize: 16, fontWeight: '700' },
+  footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 40,
+  },
+  footerText: {
+    fontSize: 15,
+  },
+  linkText: {
+    fontWeight: '700',
+    fontSize: 15,
+  }
 });

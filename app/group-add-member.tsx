@@ -54,19 +54,28 @@ export default function GroupAddMemberScreen() {
         try {
             // 1. Fetch my friends
             const { data: friendsData, error: friendsError } = await supabase
-                .from('friendships')
-                .select(`
-                requester:requester(id, username, ad, soyad, avatar_url),
-                receiver:receiver(id, username, ad, soyad, avatar_url)
-              `)
+                .from('user_follows')
+                .select('follower_id, following_id')
                 .eq('status', 'accepted')
-                .or(`requester.eq.${user?.id},receiver.eq.${user?.id}`);
+                .or(`follower_id.eq.${user?.id},following_id.eq.${user?.id}`);
 
             if (friendsError) throw friendsError;
 
-            const allFriends = friendsData.map((rel: any) =>
-                rel.requester.id === user?.id ? rel.receiver : rel.requester
-            );
+            let allFriends: any[] = [];
+            if (friendsData && friendsData.length > 0) {
+                const uniqueIds = new Set<string>();
+                friendsData.forEach((d: any) => {
+                    uniqueIds.add(d.follower_id === user?.id ? d.following_id : d.follower_id);
+                });
+                
+                const { data: profiles, error: pError } = await supabase
+                    .from('profiles')
+                    .select('id, username, ad, soyad, avatar_url')
+                    .in('id', Array.from(uniqueIds));
+
+                if (pError) throw pError;
+                allFriends = profiles || [];
+            }
 
             // 2. Fetch current group members
             const { data: memberData, error: memberError } = await supabase
@@ -171,7 +180,7 @@ export default function GroupAddMemberScreen() {
                                 />
                                 <View style={{ flex: 1 }}>
                                     <Text style={[styles.name, { color: textColor }]}>{item.ad} {item.soyad}</Text>
-                                    <Text style={[styles.username, { color: subTextColor }]}>@{item.username}</Text>
+                                    <Text style={[styles.username, { color: subTextColor }]}>{item.username ? item.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                                 </View>
                                 <Ionicons
                                     name={isSelected ? "checkbox" : "square-outline"}

@@ -28,6 +28,7 @@ export default function CreatePostScreen() {
 
     const imageUri = params.imageUri as string;
     const [caption, setCaption] = useState(params.initialFoodName ? `${params.initialFoodName} yiyorum!` : '');
+    const [tags, setTags] = useState('');
     const [loading, setLoading] = useState(false);
 
     // Recipe State
@@ -70,7 +71,8 @@ export default function CreatePostScreen() {
                 image_url: publicUrlData.publicUrl,
                 description: caption,
                 likes: 0,
-                is_recipe: isRecipe
+                is_recipe: isRecipe,
+                tags: tags.trim() || null
             };
 
             if (isRecipe) {
@@ -131,7 +133,7 @@ export default function CreatePostScreen() {
 
                     <ScrollView style={{ flex: 1 }}>
                         <View style={styles.userInfo}>
-                            <Text style={styles.usernameText}>@{user?.username || 'Kullanıcı'}</Text>
+                            <Text style={styles.usernameText}>{user?.username ? user.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                         </View>
 
                         <View style={styles.content}>
@@ -143,6 +145,15 @@ export default function CreatePostScreen() {
                                 multiline
                                 value={caption}
                                 onChangeText={setCaption}
+                            />
+                            
+                            {/* TAGS INPUT */}
+                            <TextInput
+                                style={[styles.input, { minHeight: 50, paddingTop: 10, borderTopWidth: 0.5, borderTopColor: '#333' }]}
+                                placeholder="Etiketler (virgülle ayırarak girin: sağlıklı, vegan)"
+                                placeholderTextColor="#666"
+                                value={tags}
+                                onChangeText={setTags}
                             />
                         </View>
 

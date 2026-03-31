@@ -19,6 +19,7 @@ import {
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { supabase } from './services/supabaseConfig';
+import LikesBottomSheet from '../components/LikesBottomSheet';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -49,6 +50,7 @@ export default function RecipeDetailScreen() {
     const [saved, setSaved] = useState(false);
     const [likeCount, setLikeCount] = useState(0);
     const [comments, setComments] = useState<any[]>([]);
+    const [likesSheetVisible, setLikesSheetVisible] = useState(false);
     const [newComment, setNewComment] = useState('');
 
     // Toggle for Recipe Details
@@ -276,7 +278,7 @@ export default function RecipeDetailScreen() {
                         style={styles.avatarSymbol}
                         contentFit="cover"
                     />
-                    <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? `@${postOwner.username}` : 'Kullanıcı'}</Text>
+                    <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                 </TouchableOpacity>
 
                 {/* POST IMAGE */}
@@ -301,12 +303,14 @@ export default function RecipeDetailScreen() {
 
                 {/* INFO CONTAINER */}
                 <View style={styles.infoContainer}>
-                    <Text style={[styles.likeText, { color: textColor }]}>{likeCount} beğenme</Text>
+                    <TouchableOpacity onPress={() => setLikesSheetVisible(true)}>
+                        <Text style={[styles.likeText, { color: textColor }]}>{likeCount} beğenme</Text>
+                    </TouchableOpacity>
 
                     {/* CAPTION */}
                     {post.description ? (
                         <View style={styles.captionRow}>
-                            <Text style={[styles.captionUsername, { color: textColor }]}>{postOwner?.username ? `@${postOwner.username}` : 'Kullanıcı'}</Text>
+                            <Text style={[styles.captionUsername, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                             <Text style={[styles.captionText, { color: textColor }]}>{post.description}</Text>
                         </View>
                     ) : null}
@@ -337,7 +341,7 @@ export default function RecipeDetailScreen() {
                     {comments.map(comment => (
                         <View key={comment.id} style={styles.commentRow}>
                             <Text style={[styles.commentUser, { color: textColor }]}>
-                                {comment.username ? `@${comment.username}` : 'Kullanıcı'}
+                                {comment.username ? comment.username.replace(/^@/, '') : 'Kullanıcı'}
                             </Text>
                             <Text style={[styles.commentText, { color: textColor }]}>{comment.content}</Text>
                         </View>
@@ -364,6 +368,12 @@ export default function RecipeDetailScreen() {
                     </TouchableOpacity>
                 </View>
             </KeyboardAvoidingView>
+
+            <LikesBottomSheet
+                isVisible={likesSheetVisible}
+                onClose={() => setLikesSheetVisible(false)}
+                postId={recipeId}
+            />
 
         </SafeAreaView>
     );

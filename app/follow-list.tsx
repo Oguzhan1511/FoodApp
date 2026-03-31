@@ -60,29 +60,33 @@ export default function FollowListScreen() {
 
         try {
             if (type === 'following') {
-                // 1. Fetch Friends (Users)
-                const { data: friends, error: friendsError } = await supabase
-                    .from('friendships')
-                    .select(`
-            requester:requester(id, username, ad, soyad, avatar_url),
-            receiver:receiver(id, username, ad, soyad, avatar_url)
-          `)
-                    .eq('status', 'accepted')
-                    .or(`requester.eq.${targetId},receiver.eq.${targetId}`);
+                // 1. Fetch Followed Users (Users I follow)
+                const { data: followedData, error: followedError } = await supabase
+                    .from('user_follows')
+                    .select('following_id')
+                    .eq('follower_id', targetId)
+                    .eq('status', 'accepted');
 
-                if (friendsError) throw friendsError;
+                if (followedError) throw followedError;
 
-                const friendList = (friends || []).map((f: any) => {
-                    const friend = f.requester.id === targetId ? f.receiver : f.requester;
-                    return {
-                        id: friend.id,
-                        username: friend.username,
-                        first_name: friend.ad,
-                        last_name: friend.soyad,
+                const followingIds = followedData?.map(f => f.following_id) || [];
+                let friendList: any[] = [];
+                
+                if (followingIds.length > 0) {
+                    const { data: profiles } = await supabase
+                        .from('profiles')
+                        .select('id, username, ad, soyad, avatar_url')
+                        .in('id', followingIds);
+
+                    friendList = (profiles || []).map((p: any) => ({
+                        id: p.id,
+                        username: p.username,
+                        first_name: p.ad,
+                        last_name: p.soyad,
                         role: 'user',
-                        avatar_url: friend.avatar_url
-                    };
-                });
+                        avatar_url: p.avatar_url
+                    }));
+                }
 
                 // 2. Fetch Followed Dietitians
                 const { data: dietitians, error: dietitiansError } = await supabase
@@ -106,32 +110,36 @@ export default function FollowListScreen() {
                 setList([...friendList, ...dietitianList]);
 
             } else if (type === 'followers') {
-                // 1. Fetch Friends (Users who act as followers effectively in bidirectional friendship)
-                const { data: friends, error: friendsError } = await supabase
-                    .from('friendships')
-                    .select(`
-             requester:requester(id, username, ad, soyad, avatar_url),
-             receiver:receiver(id, username, ad, soyad, avatar_url)
-           `)
-                    .eq('status', 'accepted')
-                    .or(`requester.eq.${targetId},receiver.eq.${targetId}`);
+                // 1. Fetch Followers (Users following this profile)
+                const { data: followersData, error: followersError } = await supabase
+                    .from('user_follows')
+                    .select('follower_id')
+                    .eq('following_id', targetId)
+                    .eq('status', 'accepted');
 
-                if (friendsError) throw friendsError;
+                if (followersError) throw followersError;
 
-                const friendList = (friends || []).map((f: any) => {
-                    const friend = f.requester.id === targetId ? f.receiver : f.requester;
-                    return {
-                        id: friend.id,
-                        username: friend.username,
-                        first_name: friend.ad,
-                        last_name: friend.soyad,
+                const followerIds = followersData?.map(f => f.follower_id) || [];
+                let friendList: any[] = [];
+                
+                if (followerIds.length > 0) {
+                    const { data: profiles } = await supabase
+                        .from('profiles')
+                        .select('id, username, ad, soyad, avatar_url')
+                        .in('id', followerIds);
+
+                    friendList = (profiles || []).map((p: any) => ({
+                        id: p.id,
+                        username: p.username,
+                        first_name: p.ad,
+                        last_name: p.soyad,
                         role: 'user',
-                        avatar_url: friend.avatar_url
-                    };
-                });
+                        avatar_url: p.avatar_url
+                    }));
+                }
 
                 // 2. Fetch Users following this Dietitian (If user is dietitian)
-                const { data: followers, error: followersError } = await supabase
+                const { data: followers, error: dietitianFollowersError } = await supabase
                     .from('dietitian_follows')
                     .select(`
                 follower:profiles(id, username, ad, soyad, avatar_url) 
@@ -139,7 +147,7 @@ export default function FollowListScreen() {
                     .eq('dietitian_id', targetId);
 
                 let followerList: any[] = [];
-                if (!followersError && followers) {
+                if (!dietitianFollowersError && followers) {
                     followerList = followers.map((f: any) => ({
                         id: f.follower.id,
                         username: f.follower.username,
@@ -180,7 +188,7 @@ export default function FollowListScreen() {
                 <Text style={[styles.name, { color: textColor }]}>
                     {item.first_name} {item.last_name}
                 </Text>
-                <Text style={[styles.username, { color: subTextColor }]}>@{item.username}</Text>
+                <Text style={[styles.username, { color: subTextColor }]}>{item.username ? item.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                 {item.role === 'dietitian' && (
                     <Text style={[styles.badge, { color: primaryColor, backgroundColor: isDark ? '#300' : '#ffe6e6' }]}>
                         Diyetisyen

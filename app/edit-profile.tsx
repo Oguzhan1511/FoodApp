@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -22,6 +22,7 @@ const THEME_COLOR = '#800020';
 
 export default function EditProfileScreen() {
     const router = useRouter();
+    const { intent } = useLocalSearchParams<{ intent?: string }>();
     const { user } = useAuth();
 
     const [loading, setLoading] = useState(true);
@@ -33,10 +34,14 @@ export default function EditProfileScreen() {
         firstName: '',
         lastName: '',
         username: '',
+        bio: '',
         location: '',    // Dietitian only
         diplomaNo: '',   // Dietitian only
         avatarUrl: '' as string | null,
+        address: '',     // Business only
+        phoneNumber: '', // Business only
     });
+    const [accountType, setAccountType] = useState('personal');
 
     useEffect(() => {
         if (user?.id) fetchUserData();
@@ -58,9 +63,12 @@ export default function EditProfileScreen() {
                     firstName: dietitian.first_name || '',
                     lastName: dietitian.last_name || '',
                     username: dietitian.username || '',
+                    bio: dietitian.bio || '',
                     location: dietitian.location || '',
                     diplomaNo: dietitian.diploma_no || '',
                     avatarUrl: dietitian.profile_picture || null,
+                    address: '',
+                    phoneNumber: '',
                 });
             } else {
                 // Fallback to regular profile
@@ -72,13 +80,31 @@ export default function EditProfileScreen() {
 
                 if (profile) {
                     setRole('user');
+                    // Gelen intent 'become_business' ise hesap türünü anında Business'a geçirmiş gibi formu açıyoruz (DB henüz kaydolmadı)
+                    setAccountType(intent === 'become_business' ? 'business' : (profile.account_type || 'personal'));
+                    
+                    let address = '';
+                    let phoneNumber = '';
+                    
+                    // DB'de gerçekten business ise eski adres verisi var mı bakıyoruz
+                    if (profile.account_type === 'business') {
+                        const { data: bData } = await supabase.from('business_profiles').select('*').eq('id', user?.id).maybeSingle();
+                        if (bData) {
+                            address = bData.address || '';
+                            phoneNumber = bData.phone_number || '';
+                        }
+                    }
+
                     setFormData({
                         firstName: profile.ad || '',
                         lastName: profile.soyad || '',
                         username: profile.username || '',
+                        bio: profile.bio || '',
                         location: '',
                         diplomaNo: '',
-                        avatarUrl: profile.avatar_url || null, // Assuming avatar_url exists, otherwise we'll handle it
+                        avatarUrl: profile.avatar_url || null,
+                        address: address,
+                        phoneNumber: phoneNumber,
                     });
                 }
             }
@@ -157,6 +183,7 @@ export default function EditProfileScreen() {
                     first_name: formData.firstName,
                     last_name: formData.lastName,
                     username: formData.username,
+                    bio: formData.bio,
                     location: formData.location,
                     profile_picture: publicUrl
                 };
@@ -164,14 +191,32 @@ export default function EditProfileScreen() {
                 const { error } = await supabase.from('dietitians').update(updates).eq('id', user?.id);
                 if (error) throw error;
             } else {
-                const updates = {
+                const updates: any = {
                     ad: formData.firstName,
                     soyad: formData.lastName,
                     username: formData.username,
+                    bio: formData.bio,
                     avatar_url: publicUrl
                 };
+
+                // Eğer kişi şu an İşletme'ye geçiş yapıyorsa ya da zaten bir İşletmeyse:
+                if (intent === 'become_business' || accountType === 'business') {
+                    updates.account_type = 'business';
+                }
+
                 const { error } = await supabase.from('profiles').update(updates).eq('id', user?.id);
                 if (error) throw error;
+                
+                if (intent === 'become_business' || accountType === 'business') {
+                    // İşletme hesabı ise business tablosunu da güncelle
+                    const busUpdates = {
+                        id: user?.id,
+                        address: formData.address,
+                        phone_number: formData.phoneNumber
+                    };
+                    const { error: bError } = await supabase.from('business_profiles').upsert(busUpdates);
+                    if (bError) console.error("Business table upsert hatası", bError);
+                }
             }
 
             Alert.alert('Başarılı', 'Profil bilgileriniz güncellendi.', [
@@ -203,7 +248,9 @@ export default function EditProfileScreen() {
                 <TouchableOpacity onPress={() => router.back()}>
                     <Ionicons name="close" size={28} color="#333" />
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Profili Düzenle</Text>
+                <Text style={styles.headerTitle}>
+                    {intent === 'become_business' ? 'İşletme Bilgileri' : 'Profili Düzenle'}
+                </Text>
                 <TouchableOpacity onPress={handleSave} disabled={saving}>
                     {saving ? (
                         <ActivityIndicator size="small" color={THEME_COLOR} />
@@ -250,13 +297,44 @@ export default function EditProfileScreen() {
                         autoCapitalize="none"
                     />
 
+                    <Text style={[styles.label, { marginTop: 15 }]}>Biyografi</Text>
+                    <TextInput
+                        style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                        value={formData.bio}
+                        onChangeText={(t) => setFormData({ ...formData, bio: t })}
+                        multiline
+                        placeholder="Kendinizden bahsedin..."
+                    />
+
                     {role === 'dietitian' && (
                         <>
-                            <Text style={styles.label}>Konum</Text>
+                            <Text style={styles.label}>Konum (Klinik)</Text>
                             <TextInput
                                 style={styles.input}
                                 value={formData.location}
                                 onChangeText={(t) => setFormData({ ...formData, location: t })}
+                            />
+                        </>
+                    )}
+
+                    {accountType === 'business' && (
+                        <>
+                            <Text style={[styles.label, { marginTop: 15 }]}>İşletme Adresi</Text>
+                            <TextInput
+                                style={[styles.input, { minHeight: 40 }]}
+                                value={formData.address}
+                                onChangeText={(t) => setFormData({ ...formData, address: t })}
+                                placeholder="Açık Adres"
+                                multiline
+                            />
+
+                            <Text style={[styles.label, { marginTop: 15 }]}>İletişim Numarası (WhatsApp)</Text>
+                            <TextInput
+                                style={styles.input}
+                                value={formData.phoneNumber}
+                                onChangeText={(t) => setFormData({ ...formData, phoneNumber: t })}
+                                placeholder="Örn: 0555..."
+                                keyboardType="phone-pad"
                             />
                         </>
                     )}

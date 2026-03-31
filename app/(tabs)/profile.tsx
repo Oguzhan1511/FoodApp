@@ -74,11 +74,13 @@ export default function ProfileScreen() {
 
     useEffect(() => {
         const fetchImage = async () => {
-            const url = profile?.role === 'dietitian' ? profile?.profile_picture : profile?.avatar_url;
+            // Priority: contextUser -> profile
+            const url = contextUser?.avatar_url || (profile?.role === 'dietitian' ? profile?.profile_picture : profile?.avatar_url);
+
             if (!url) {
-                // Default avatar
-                if (profile?.first_name) {
-                    setImageSource(`https://ui-avatars.com/api/?name=${profile.first_name}&background=800020&color=fff`);
+                const nameForAvatar = contextUser?.ad || profile?.ad || profile?.first_name;
+                if (nameForAvatar) {
+                    setImageSource(`https://ui-avatars.com/api/?name=${nameForAvatar}&background=800020&color=fff`);
                 } else {
                     setImageSource(null);
                 }
@@ -192,12 +194,19 @@ export default function ProfileScreen() {
 
     const fetchStats = async (uid: string) => {
         try {
-            // 1. Arkadaş sayısını hesapla (Friendships)
-            const { count: friendCount, error: friendError } = await supabase
-                .from('friendships')
+            // 1. Takipçi sayısını hesapla (Beni takip edenler)
+            const { count: followerCountDb, error: followerError } = await supabase
+                .from('user_follows')
                 .select('id', { count: 'exact', head: true })
-                .eq('status', 'accepted')
-                .or(`requester.eq.${uid},receiver.eq.${uid}`);
+                .eq('following_id', uid)
+                .eq('status', 'accepted');
+
+            // 1.5 Takip edilen sayısını hesapla (Benim takip ettiklerim)
+            const { count: followingCountDb, error: followingError } = await supabase
+                .from('user_follows')
+                .select('id', { count: 'exact', head: true })
+                .eq('follower_id', uid)
+                .eq('status', 'accepted');
 
             // 2. Takip edilen diyetisyen sayısını hesapla
             const { count: followingDietitianCount, error: dietError } = await supabase
@@ -206,7 +215,7 @@ export default function ProfileScreen() {
                 .eq('follower_id', uid);
 
             // 3. (Eğer Diyetisyense) Takipçi sayısını hesapla
-            let followerCount = friendCount || 0;
+            let followerCount = followerCountDb || 0;
 
             // Eğer profil diyetisyense, onu takip edenleri ekle
             const { count: dietFollowers, error: dfError } = await supabase
@@ -218,13 +227,13 @@ export default function ProfileScreen() {
                 followerCount += dietFollowers;
             }
 
-            if (friendError) console.log("Arkadaş istatistik hatası:", friendError);
+            if (followerError || followingError) console.log("Takip istatistik hatası", followerError, followingError);
             if (dietError) console.log("Diyetisyen takip istatistik hatası:", dietError);
 
             setStats(prev => ({
                 ...prev,
                 followers: followerCount,
-                following: (friendCount || 0) + (followingDietitianCount || 0)
+                following: (followingCountDb || 0) + (followingDietitianCount || 0)
             }));
 
         } catch (err) {
@@ -300,6 +309,61 @@ export default function ProfileScreen() {
             console.log("Privacy update error:", error);
             setIsPrivate(!value); // Revert on error
             Alert.alert("Hata", "Gizlilik ayarı güncellenemedi.");
+        }
+    };
+
+    const handleChangeAccountType = () => {
+        Alert.alert(
+            "Hesap Türü",
+            "Profilinizi hangi hesap türüne çevirmek istiyorsunuz?",
+            [
+                { text: "İptal", style: "cancel" },
+                { text: "Bireysel Hesap", onPress: () => updateAccountType('personal') },
+                { text: "İşletme (Ticari)", onPress: () => updateAccountType('business') },
+                { text: "Diyetisyen", onPress: () => updateAccountType('dietitian') }
+            ]
+        );
+    };
+
+    const updateAccountType = async (type: string) => {
+        if (!contextUser?.id) return;
+        
+        if (type === 'dietitian') {
+            closeSettings();
+            Alert.alert("Bilgi", "Diyetisyen hesabına geçişte diploma ve sertifika bilgilerinizi doğrulamanız gerekmektedir.", [
+                { text: "Devam Et", onPress: () => router.push({ pathname: '/DietitianDetailsScreen', params: { uid: contextUser.id } }) },
+                { text: "Vazgeç", style: "cancel" }
+            ]);
+            return;
+        }
+
+        if (type === 'business') {
+            closeSettings();
+            Alert.alert("İşletme Hesabına Geçiş", "İşletme sayfasına geçebilmek için lütfen işletme iletişim ve adres bilgilerinizi tanımlayın.", [
+                { text: "Devam Et", onPress: () => router.push({ pathname: '/edit-profile', params: { intent: 'become_business' } }) },
+                { text: "Vazgeç", style: "cancel" }
+            ]);
+            return;
+        }
+
+        try {
+            // Sadece Bireysele Dönüş anlık kaydolur
+            if (profile?.role !== 'dietitian') {
+                const { error } = await supabase
+                    .from('profiles')
+                    .update({ account_type: type })
+                    .eq('id', contextUser.id);
+                
+                if (error) throw error;
+                
+                setProfile((prev: any) => ({ ...prev, account_type: type }));
+                closeSettings();
+                Alert.alert("Başarılı", "Bireysel hesaba dönüş uygulandı.");
+            } else {
+                Alert.alert("Hata", "Diyetisyen hesapları otomatik geri döndürülemez. Destek ile iletişime geçin.");
+            }
+        } catch (e: any) {
+            Alert.alert("Hata", "Hesap türü değiştirilirken bir hata oluştu: " + e.message);
         }
     };
 
@@ -387,7 +451,9 @@ export default function ProfileScreen() {
 
                 {/* İSİM VE BİO */}
                 <View style={styles.bioContainer}>
-                    <Text style={[styles.fullName, { color: textColor }]}>{profile?.first_name} {profile?.last_name}</Text>
+                    <Text style={[styles.fullName, { color: textColor }]}>
+                        {contextUser?.ad || profile?.ad || profile?.first_name} {contextUser?.soyad || profile?.soyad || profile?.last_name}
+                    </Text>
 
                     {profile?.role === 'dietitian' ? (
                         <View>
@@ -402,9 +468,22 @@ export default function ProfileScreen() {
                             )}
                         </View>
                     ) : (
-                        <Text style={[styles.bioText, { color: subTextColor }]}>Sağlıklı yaşam için Foodap kullanıyor. 🥑</Text>
+                        <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.bio || 'Sağlıklı yaşam için Foodap kullanıyor. 🥑'}</Text>
                     )}
                 </View>
+
+                {profile?.account_type === 'business' && (
+                    <View style={styles.businessButtonsContainer}>
+                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => Alert.alert('Yol Tarifi', 'Müşterileriniz bu butona tıklayarak işletmenize yol tarifi alır.')}>
+                            <Ionicons name="location-outline" size={18} color={THEME_COLOR} />
+                            <Text style={[styles.businessButtonText, { color: textColor }]}>Yol Tarifi (Önizleme)</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => router.push('/edit-profile')}>
+                            <Ionicons name="restaurant-outline" size={18} color={THEME_COLOR} />
+                            <Text style={[styles.businessButtonText, { color: textColor }]}>Menüyü Düzenle</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
 
                 {/* BUTONLAR */}
                 <View style={styles.actionButtons}>
@@ -546,6 +625,17 @@ export default function ProfileScreen() {
 
                                 <TouchableOpacity
                                     style={[styles.modalOption, { borderBottomColor: borderColor }]}
+                                    onPress={handleChangeAccountType}
+                                >
+                                    <View style={styles.optionLeft}>
+                                        <Ionicons name="briefcase-outline" size={22} color={textColor} />
+                                        <Text style={[styles.optionText, { color: textColor }]}>Hesap Türü (Geçiş)</Text>
+                                    </View>
+                                    <Ionicons name="chevron-forward" size={20} color={subTextColor} />
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[styles.modalOption, { borderBottomColor: borderColor }]}
                                     onPress={() => setSettingsView('privacy')}
                                 >
                                     <View style={styles.optionLeft}>
@@ -642,9 +732,30 @@ const styles = StyleSheet.create({
         borderColor: '#ffeeba'
     },
     pendingText: { color: '#856404', fontWeight: 'bold', fontSize: 13 },
-    actionButtons: { paddingHorizontal: 20, marginTop: 20 },
+    actionButtons: { paddingHorizontal: 20, marginTop: 15 },
     editButton: { backgroundColor: '#f0f0f0', padding: 12, borderRadius: 10, alignItems: 'center' },
     buttonText: { fontWeight: 'bold', color: '#333' },
+    businessButtonsContainer: {
+        flexDirection: 'row',
+        paddingHorizontal: 20,
+        marginTop: 15,
+        justifyContent: 'space-between',
+        gap: 10
+    },
+    businessButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 10,
+        borderRadius: 8,
+        borderWidth: 1,
+    },
+    businessButtonText: {
+        marginLeft: 6,
+        fontWeight: 'bold',
+        fontSize: 14
+    },
     tabContainer: { flexDirection: 'row', marginTop: 25, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
     tabButton: { flex: 1, alignItems: 'center', paddingVertical: 12 },
     activeTab: { borderBottomWidth: 2, borderBottomColor: THEME_COLOR },

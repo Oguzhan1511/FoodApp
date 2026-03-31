@@ -4,16 +4,16 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
     SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
-    TextInput,
     TouchableOpacity,
     View
 } from 'react-native';
+import CommentBottomSheet from '../components/CommentBottomSheet';
+import LikesBottomSheet from '../components/LikesBottomSheet';
+import ShareBottomSheet from '../components/ShareBottomSheet';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
 import { supabase } from './services/supabaseConfig';
@@ -41,6 +41,9 @@ export default function PostDetailScreen() {
     const [saved, setSaved] = useState(false);
     const [likeCount, setLikeCount] = useState(0);
     const [comments, setComments] = useState<any[]>([]);
+    const [commentSheetVisible, setCommentSheetVisible] = useState(false);
+    const [likesSheetVisible, setLikesSheetVisible] = useState(false);
+    const [shareSheetVisible, setShareSheetVisible] = useState(false);
     const [newComment, setNewComment] = useState('');
 
     useEffect(() => {
@@ -170,12 +173,14 @@ export default function PostDetailScreen() {
                 }
             });
 
-            // Yorumları kullanıcı verisiyle birleştir
-            const enrichedComments = commentsData.map(c => ({
-                ...c,
-                username: userMap[c.user_id]?.username || 'Bilinmeyen Kullanıcı',
-                avatar_url: userMap[c.user_id]?.avatar_url
-            }));
+            // Yorumları kullanıcı verisiyle birleştir ve gizli olanları filtrele (Home/Detail önizlemesi için)
+            const enrichedComments = (commentsData || [])
+                .filter(c => !c.is_hidden)
+                .map(c => ({
+                    ...c,
+                    username: userMap[c.user_id]?.username || 'Bilinmeyen Kullanıcı',
+                    avatar_url: userMap[c.user_id]?.avatar_url
+                }));
 
             setComments(enrichedComments);
 
@@ -211,6 +216,16 @@ export default function PostDetailScreen() {
                     .from('posts')
                     .update({ likes: newCount })
                     .eq('id', postId);
+
+                // Trigger Notification
+                if (post.user_id !== user.id) {
+                    await supabase.from('notifications').insert([{
+                        user_id: post.user_id,
+                        actor_id: user.id,
+                        type: 'like',
+                        post_id: postId
+                    }]);
+                }
 
             } else {
                 // Beğeni Kaldır
@@ -283,6 +298,17 @@ export default function PostDetailScreen() {
             // Listeyi güncelle
             fetchComments();
 
+            // Trigger Notification
+            if (post.user_id !== user.id) {
+                await supabase.from('notifications').insert([{
+                    user_id: post.user_id,
+                    actor_id: user.id,
+                    type: 'comment',
+                    post_id: postId,
+                    content: commentText
+                }]);
+            }
+
         } catch (err) {
             console.error("Yorum hatası:", err);
             setNewComment(commentText);
@@ -326,7 +352,7 @@ export default function PostDetailScreen() {
                         style={styles.avatarSymbol}
                         contentFit="cover"
                     />
-                    <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? `@${postOwner.username}` : 'Kullanıcı'}</Text>
+                    <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                 </TouchableOpacity>
 
                 {/* POST IMAGE */}
@@ -341,8 +367,11 @@ export default function PostDetailScreen() {
                     <TouchableOpacity onPress={handleLike} style={styles.actionBtn}>
                         <Ionicons name={liked ? "heart" : "heart-outline"} size={28} color={liked ? (isDark ? "#ff4d4d" : "red") : textColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.actionBtn}>
+                    <TouchableOpacity onPress={() => setCommentSheetVisible(true)} style={styles.actionBtn}>
                         <Ionicons name="chatbubble-outline" size={26} color={textColor} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShareSheetVisible(true)} style={styles.actionBtn}>
+                        <Ionicons name="paper-plane-outline" size={26} color={textColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={handleToggleSave} style={styles.actionBtn}>
                         <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={26} color={textColor} />
@@ -351,49 +380,69 @@ export default function PostDetailScreen() {
 
                 {/* LIKES & CAPTION */}
                 <View style={styles.infoContainer}>
-                    <Text style={[styles.likeText, { color: textColor }]}>{likeCount} beğenme</Text>
+                    <TouchableOpacity onPress={() => setLikesSheetVisible(true)}>
+                        <Text style={[styles.likeText, { color: textColor }]}>{likeCount} beğenme</Text>
+                    </TouchableOpacity>
 
                     {post.description ? (
                         <View style={styles.captionRow}>
-                            <Text style={[styles.captionUsername, { color: textColor }]}>{postOwner?.username ? `@${postOwner.username}` : 'Kullanıcı'}</Text>
+                            <Text style={[styles.captionUsername, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
                             <Text style={[styles.captionText, { color: textColor }]}>{post.description}</Text>
+                        </View>
+                    ) : null}
+
+                    {/* ETİKETLER */}
+                    {post.tags ? (
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 5, marginBottom: 5 }}>
+                            {post.tags.split(',').map((tag: string, index: number) => {
+                                const cleanTag = tag.trim();
+                                if(!cleanTag) return null;
+                                return (
+                                    <View key={index} style={{ backgroundColor: isDark ? '#333' : '#eee', borderRadius: 15, paddingHorizontal: 10, paddingVertical: 4, marginRight: 8, marginBottom: 5 }}>
+                                        <Text style={{ color: isDark ? '#ccc' : '#555', fontSize: 12 }}>#{cleanTag}</Text>
+                                    </View>
+                                );
+                            })}
                         </View>
                     ) : null}
 
                     <Text style={[styles.dateText, { color: subTextColor }]}>{new Date(post.created_at).toLocaleDateString()}</Text>
                 </View>
 
-                {/* COMMENTS SECTION */}
+                {/* COMMENTS SECTION PREVIEW / LINK */}
                 <View style={styles.commentsSection}>
-                    {comments.map(comment => (
-                        <View key={comment.id} style={styles.commentRow}>
-                            <Text style={[styles.commentUser, { color: textColor }]}>
-                                {comment.username ? `@${comment.username}` : 'Kullanıcı'}
+                    <TouchableOpacity onPress={() => setCommentSheetVisible(true)}>
+                        <Text style={{ color: subTextColor, fontSize: 14, marginBottom: 10 }}>
+                            {comments.length > 0 ? `${comments.length} yorumun tümünü gör` : 'İlk yorumu yaz...'}
+                        </Text>
+                    </TouchableOpacity>
+                    {comments.slice(0, 2).map((comment: any) => (
+                        <View key={comment.id} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                            <Text style={{ fontWeight: 'bold', marginRight: 5, color: textColor, fontSize: 13 }}>
+                                {comment.username ? comment.username.replace(/^@/, '') : 'Bilinmeyen'}
                             </Text>
-                            <Text style={[styles.commentText, { color: textColor }]}>{comment.content}</Text>
+                            <Text style={{ color: textColor, fontSize: 13 }}>{comment.content}</Text>
                         </View>
                     ))}
-                    {comments.length === 0 && (
-                        <Text style={{ color: subTextColor, fontSize: 13, marginTop: 5 }}>Henüz yorum yok.</Text>
-                    )}
                 </View>
             </ScrollView>
 
-            {/* COMMENT INPUT */}
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={10}>
-                <View style={[styles.inputContainer, { borderColor: borderColor }]}>
-                    <TextInput
-                        style={[styles.input, { backgroundColor: inputBg, color: textColor }]}
-                        placeholder="Yorum yap..."
-                        placeholderTextColor={subTextColor}
-                        value={newComment}
-                        onChangeText={setNewComment}
-                    />
-                    <TouchableOpacity onPress={handleSendComment}>
-                        <Text style={[styles.sendText, { color: isDark ? '#4dabf5' : '#0095f6' }]}>Paylaş</Text>
-                    </TouchableOpacity>
-                </View>
-            </KeyboardAvoidingView>
+            <CommentBottomSheet
+                isVisible={commentSheetVisible}
+                onClose={() => setCommentSheetVisible(false)}
+                postId={postId as string}
+                postOwnerId={post?.user_id || ''}
+            />
+            <ShareBottomSheet
+                isVisible={shareSheetVisible}
+                onClose={() => setShareSheetVisible(false)}
+                postId={postId as string}
+            />
+            <LikesBottomSheet
+                isVisible={likesSheetVisible}
+                onClose={() => setLikesSheetVisible(false)}
+                postId={postId as string}
+            />
         </SafeAreaView>
     );
 }

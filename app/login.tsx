@@ -1,11 +1,16 @@
+import { Ionicons } from '@expo/vector-icons';
+import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
-import { signInWithEmailAndPassword } from 'firebase/auth';
-import React, { useState } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import * as WebBrowser from 'expo-web-browser';
+import { GoogleAuthProvider, signInWithCredential, signInWithEmailAndPassword } from 'firebase/auth';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
@@ -13,16 +18,69 @@ import {
   View
 } from 'react-native';
 import { useAuth } from './AuthContext';
+import { useTheme } from './ThemeContext';
 import { auth } from './services/firebaseConfig';
-import { supabase } from './services/supabaseConfig'; // Supabase eklendi
+import { supabase } from './services/supabaseConfig';
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
   const router = useRouter();
   const { login } = useAuth();
+  const { theme } = useTheme();
+
+  const isDark = theme === 'dark';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Google Auth Setup (Expo Proxy used for Expo Go support)
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    androidClientId: 'GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
+    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
+    webClientId: 'GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com', // Yeni Web ID buraya gelecek
+  });
+
+  useEffect(() => {
+    if (response?.type === 'success') {
+      handleGoogleLogin(response.params.id_token);
+    }
+  }, [response]);
+
+  const handleGoogleLogin = async (idToken: string) => {
+    setLoading(true);
+    try {
+      const credential = GoogleAuthProvider.credential(idToken);
+      const userCredential = await signInWithCredential(auth, credential);
+      const user = userCredential.user;
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.uid)
+        .single();
+
+      if (!profile) {
+        const autoUsername = (user.email?.split('@')[0] || 'user') + Math.floor(Math.random() * 1000);
+        await supabase
+          .from('profiles')
+          .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }]);
+      }
+
+      login({
+        id: user.uid,
+        username: profile?.username || (user.email?.split('@')[0] || 'user'),
+      });
+
+      router.replace('/(tabs)/home');
+    } catch (err: any) {
+      console.error("Google Login Error:", err.message);
+      Alert.alert("Giriş Başarısız", "Google ile giriş yapılırken bir hata oluştu.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -32,16 +90,13 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      // 1. Firebase ile giriş yap
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const firebaseUser = userCredential.user;
-      console.log("Firebase Girişi Başarılı:", firebaseUser.email);
 
-      // 2. Supabase'den gerçek 'username' bilgisini çek
-      let finalUsername = firebaseUser.email || ''; // Varsayılan olarak email
+      let finalUsername = firebaseUser.email || '';
 
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from('profiles')
           .select('username')
           .eq('id', firebaseUser.uid)
@@ -49,20 +104,11 @@ export default function LoginScreen() {
 
         if (data?.username) {
           finalUsername = data.username;
-          console.log("Supabase Profil Bulundu:", finalUsername);
-        } else {
-          console.log("Profil verisi çekilemedi veya username yok, email kullanılacak.");
         }
-
-        if (error) {
-          console.log("Supabase Profil Hatası (Önemsiz):", error.message);
-        }
-
       } catch (dbError) {
         console.log("Veritabanı bağlantı hatası:", dbError);
       }
 
-      // 3. Context'i güncelle
       login({
         id: firebaseUser.uid,
         username: finalUsername
@@ -86,148 +132,234 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.container}
-    >
-      <View style={styles.innerContainer}>
-
-        <Text style={styles.title}>Hoş Geldiniz</Text>
-        <Text style={styles.subtitle}>Hesabınıza giriş yapın.</Text>
-
-        <View style={styles.inputContainer}>
-          <Text style={styles.label}>E-Posta</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="ornek@mail.com"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            value={email}
-            onChangeText={setEmail}
-          />
-        </View>
-
-        <View style={styles.inputContainer}>
-          <Text style={styles.label}>Şifre</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="******"
-            secureTextEntry={true}
-            value={password}
-            onChangeText={setPassword}
-          />
-        </View>
-
-        {/* Şifremi Unuttum */}
-        <TouchableOpacity
-          style={styles.forgotPasswordContainer}
-          onPress={() => router.push('/forgot-password')}
-        >
-          <Text style={styles.forgotPasswordText}>Şifremi Unuttum?</Text>
-        </TouchableOpacity>
-
-        {/* Giriş Yap Butonu */}
-        <TouchableOpacity
-          style={[styles.button, loading && { opacity: 0.7 }]}
-          onPress={handleLogin}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Giriş Yap</Text>
-          )}
-        </TouchableOpacity>
-
-        {/* Alt Link: Kayıt Ol */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Hesabın yok mu? </Text>
-          <TouchableOpacity onPress={() => router.push('/register')}>
-            <Text style={styles.linkText}>Kayıt Ol</Text>
+    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#000000' : '#FFFFFF' }]}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.flex}
+      >
+        <View style={styles.innerContainer}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={28} color={isDark ? '#FFF' : '#333'} />
           </TouchableOpacity>
-        </View>
 
-      </View>
-    </KeyboardAvoidingView>
+          <View style={styles.header}>
+            <View style={[styles.headerIcon, { backgroundColor: isDark ? '#1a1a1a' : '#fff5f7' }]}>
+              <Ionicons name="lock-closed" size={32} color="#800020" />
+            </View>
+            <Text style={[styles.title, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>Hoş Geldiniz</Text>
+            <Text style={[styles.subtitle, { color: isDark ? '#888' : '#666' }]}>Hesabınıza giriş yapın.</Text>
+          </View>
+
+          <View style={styles.form}>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={[styles.input, {
+                  backgroundColor: isDark ? '#111' : '#F9F9F9',
+                  borderColor: isDark ? '#333' : '#F0F0F0',
+                  color: isDark ? '#FFF' : '#000'
+                }]}
+                placeholder="E-Posta"
+                placeholderTextColor={isDark ? '#555' : '#AAA'}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={email}
+                onChangeText={setEmail}
+              />
+            </View>
+
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={[styles.input, {
+                  backgroundColor: isDark ? '#111' : '#F9F9F9',
+                  borderColor: isDark ? '#333' : '#F0F0F0',
+                  color: isDark ? '#FFF' : '#000'
+                }]}
+                placeholder="Şifre"
+                placeholderTextColor={isDark ? '#555' : '#AAA'}
+                secureTextEntry={true}
+                value={password}
+                onChangeText={setPassword}
+              />
+            </View>
+
+            <TouchableOpacity
+              style={styles.forgotPasswordContainer}
+              onPress={() => router.push('/forgot-password')}
+            >
+              <Text style={[styles.forgotPasswordText, { color: isDark ? '#AAA' : '#666' }]}>Şifremi Unuttum?</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.button, styles.primaryButton, !isDark && styles.shadow, loading && { opacity: 0.7 }]}
+              onPress={handleLogin}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>Giriş Yap</Text>
+              )}
+            </TouchableOpacity>
+
+            <View style={styles.divider}>
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#222' : '#EEE' }]} />
+              <Text style={[styles.dividerText, { color: isDark ? '#444' : '#BBB' }]}>veya</Text>
+              <View style={[styles.dividerLine, { backgroundColor: isDark ? '#222' : '#EEE' }]} />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.googleBtn, {
+                backgroundColor: isDark ? '#111' : '#FFF',
+                borderColor: isDark ? '#333' : '#EEE'
+              }]}
+              onPress={() => promptAsync()}
+              disabled={!request || loading}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="logo-google" size={20} color={isDark ? '#FFF' : '#DB4437'} />
+              <Text style={[styles.googleBtnText, { color: isDark ? '#FFF' : '#555' }]}>Google ile Devam Et</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.footer}>
+            <Text style={[styles.footerText, { color: isDark ? '#666' : '#999' }]}>Hesabın yok mu? </Text>
+            <TouchableOpacity onPress={() => router.push('/register')}>
+              <Text style={[styles.linkText, { color: isDark ? '#FFF' : '#800020' }]}>Kayıt Ol</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+  },
+  flex: {
+    flex: 1,
   },
   innerContainer: {
     flex: 1,
+    paddingHorizontal: 40,
+    justifyContent: 'flex-start',
+    paddingTop: 100,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    marginLeft: -10,
     justifyContent: 'center',
-    padding: 20,
+    marginBottom: 20,
+  },
+  header: {
+    marginBottom: 40,
+    alignItems: 'center',
+  },
+  headerIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
   },
   title: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#800020',
-    marginBottom: 5,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 30,
-  },
-  inputContainer: {
-    marginBottom: 15,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#444',
+    fontSize: 34,
+    fontWeight: '800',
+    letterSpacing: -1,
     marginBottom: 8,
   },
+  subtitle: {
+    fontSize: 17,
+    textAlign: 'center',
+    opacity: 0.7,
+  },
+  form: {
+    width: '100%',
+  },
+  inputWrapper: {
+    marginBottom: 16,
+  },
   input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: '#f9f9f9',
+    height: 60,
+    borderRadius: 20,
+    paddingHorizontal: 20,
     fontSize: 16,
+    borderWidth: 1.5,
   },
   forgotPasswordContainer: {
     alignSelf: 'flex-end',
-    marginBottom: 20,
+    marginBottom: 32,
+    paddingRight: 4,
   },
   forgotPasswordText: {
-    color: '#800020',
-    fontWeight: '600',
     fontSize: 14,
+    fontWeight: '600',
   },
   button: {
-    backgroundColor: '#800020',
-    padding: 15,
-    borderRadius: 10,
+    height: 60,
+    borderRadius: 20,
+    justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: "#800020",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 5,
+  },
+  primaryButton: {
+    backgroundColor: '#800020',
+  },
+  shadow: {
+    shadowColor: '#800020',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 15,
+    elevation: 4,
   },
   buttonText: {
     color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '700',
   },
-  // DİKKAT: Buradaki virgül çok önemli! ↓
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 32,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    paddingHorizontal: 16,
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  googleBtn: {
+    flexDirection: 'row',
+    height: 60,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  googleBtnText: { marginLeft: 12, fontSize: 16, fontWeight: '700' },
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginTop: 30,
+    marginTop: 40,
   },
   footerText: {
-    color: '#666',
     fontSize: 15,
   },
   linkText: {
-    color: '#800020',
-    fontWeight: 'bold',
+    fontWeight: '700',
     fontSize: 15,
   }
 });

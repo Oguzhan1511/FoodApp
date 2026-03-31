@@ -143,7 +143,7 @@ export default function FriendsScreen() {
 
       if (partnerId && !latestMap[partnerId]) {
         latestMap[partnerId] = {
-          content: msg.content.startsWith('DIET_') ? '📷 Medya/Plan' : msg.content,
+          content: msg.content.startsWith('DIET_') ? '📷 Medya/Plan' : (msg.content.startsWith('POST_SHARE:::') ? '📸 Gönderi paylaştı' : msg.content),
           created_at: msg.created_at,
           sender_id: msg.sender_id // Save sender_id
         };
@@ -170,41 +170,61 @@ export default function FriendsScreen() {
 
   const fetchFriends = async (currentUid: string) => {
     const { data, error } = await supabase
-      .from('friendships')
-      .select(`
-                requester:requester(id, username, ad, soyad, avatar_url),
-                receiver:receiver(id, username, ad, soyad, avatar_url)
-            `)
+      .from('user_follows')
+      .select('follower_id, following_id')
       .eq('status', 'accepted')
-      .or(`requester.eq.${currentUid},receiver.eq.${currentUid}`);
+      .or(`follower_id.eq.${currentUid},following_id.eq.${currentUid}`);
 
     if (error) {
       console.error("Liste Çekme Hatası:", error);
       return;
     }
 
-    if (data) {
-      const formatted = data.map((rel: any) =>
-        rel.requester.id === currentUid ? rel.receiver : rel.requester
-      );
-      setFriends(formatted);
+    if (data && data.length > 0) {
+      const uniqueIds = new Set<string>();
+      data.forEach(d => {
+        uniqueIds.add(d.follower_id === currentUid ? d.following_id : d.follower_id);
+      });
+      const idsArray = Array.from(uniqueIds);
+      
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username, ad, soyad, avatar_url')
+        .in('id', idsArray);
+
+      if (profiles) {
+        setFriends(profiles as any);
+      }
+    } else {
+        setFriends([]);
     }
   };
 
   const fetchRequests = async (currentUid: string) => {
-    const { data, error } = await supabase
-      .from('friendships')
-      .select(`
-                id,
-                requester:requester(id, username, ad, soyad)
-            `)
-      .eq('receiver', currentUid)
+    const { data: requestsData, error: reqError } = await supabase
+      .from('user_follows')
+      .select('id, follower_id')
+      .eq('following_id', currentUid)
       .eq('status', 'pending');
 
-    if (error) {
-      console.error("İstekleri Çekme Hatası:", error);
+    if (reqError) {
+      console.error("İstekleri Çekme Hatası:", reqError);
+    } else if (requestsData && requestsData.length > 0) {
+      const requesterIds = requestsData.map(r => r.follower_id);
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username, ad, soyad, avatar_url')
+        .in('id', requesterIds);
+
+      if (profiles) {
+        const fullRequests = requestsData.map(req => ({
+             id: req.id,
+             requester: profiles.find(p => p.id === req.follower_id)
+        })).filter(r => r.requester);
+        setRequests(fullRequests);
+      }
     } else {
-      setRequests(data || []);
+        setRequests([]);
     }
   };
 
@@ -212,14 +232,68 @@ export default function FriendsScreen() {
     try {
       if (action === 'accept') {
         const { error } = await supabase
-          .from('friendships')
+          .from('user_follows')
           .update({ status: 'accepted' })
           .eq('id', friendshipId);
         if (error) throw error;
-        Alert.alert("Başarılı", "Arkadaşlık isteği kabul edildi!");
+
+        // Trigger Notification for the requester
+        const request = requests.find(r => r.id === friendshipId);
+        if (request) {
+          await supabase.from('notifications').insert([{
+            user_id: request.requester.id,
+            actor_id: uid,
+            type: 'friend_accept',
+            content: 'accept_request'
+          }]);
+
+          const { data: actorProfile } = await supabase.from('profiles').select('is_private, username').eq('id', request.requester.id).single();
+
+          // Zaten takip ediyor mu veya istek atmış mı kontrol et
+          const { data: existingFollowData } = await supabase
+              .from('user_follows')
+              .select('id')
+              .eq('follower_id', uid)
+              .eq('following_id', request.requester.id)
+              .maybeSingle();
+
+          if (existingFollowData) {
+              Alert.alert("Başarılı", "Takip isteği kabul edildi!");
+          } else {
+              Alert.alert(
+                  "Takip İsteği Kabul Edildi",
+                  `@${actorProfile?.username || 'Kullanıcı'} artık sizi takip ediyor. Siz de onu takip etmek ister misiniz?`,
+                  [
+                      { text: "Hayır", style: "cancel" },
+                      {
+                          text: "Sen de Takip Et",
+                          onPress: async () => {
+                              const isPublic = !actorProfile?.is_private;
+                              await supabase.from('user_follows').insert([{
+                                  follower_id: uid,
+                                  following_id: request.requester.id,
+                                  status: isPublic ? 'accepted' : 'pending'
+                              }]);
+                              
+                              await supabase.from('notifications').insert([{
+                                  user_id: request.requester.id,
+                                  actor_id: uid,
+                                  type: isPublic ? 'friend_accept' : 'friend_request',
+                                  content: isPublic ? 'direct_follow' : null
+                              }]);
+                              
+                              Alert.alert("Başarılı", isPublic ? "Kullanıcıyı takip etmeye başladınız." : "Takip isteği gönderildi.");
+                          }
+                      }
+                  ]
+              );
+          }
+        } else {
+            Alert.alert("Başarılı", "Takip isteği kabul edildi!");
+        }
       } else {
         const { error } = await supabase
-          .from('friendships')
+          .from('user_follows')
           .delete()
           .eq('id', friendshipId);
         if (error) throw error;
@@ -293,7 +367,7 @@ export default function FriendsScreen() {
             <View key={req.id} style={[styles.requestRow, { backgroundColor: cardBg, borderColor: borderColor }]}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.requestName, { color: textColor }]}>{req.requester.ad} {req.requester.soyad}</Text>
-                <Text style={[styles.requestUsername, { color: subTextColor }]}>@{req.requester.username}</Text>
+                <Text style={[styles.requestUsername, { color: subTextColor }]}>{req.requester.username ? req.requester.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
               </View>
               <View style={styles.actionButtons}>
                 <TouchableOpacity style={styles.acceptButton} onPress={() => handleResponse(req.id, 'accept')}>

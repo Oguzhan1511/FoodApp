@@ -17,6 +17,9 @@ import {
 // --- ÖRNEK VERİLER KALDIRILDI ---
 
 import { useFocusEffect } from 'expo-router';
+import CommentBottomSheet from '../../components/CommentBottomSheet';
+import LikesBottomSheet from '../../components/LikesBottomSheet';
+import ShareBottomSheet from '../../components/ShareBottomSheet';
 import { useAuth } from '../AuthContext';
 import { useStory } from '../StoryContext';
 import { useTheme } from '../ThemeContext';
@@ -43,16 +46,39 @@ export default function HomeScreen() {
 
   const [posts, setPosts] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [hasUnreadNotifications, setHasUnreadNotifications] = React.useState(false);
 
-  // Tab her açıldığında verileri yenile
+  // Comment & Share Bottom Sheet State
+  const [commentSheetVisible, setCommentSheetVisible] = React.useState(false);
+  const [activePost, setActivePost] = React.useState<{ id: string, ownerId: string } | null>(null);
+  const [likesSheetVisible, setLikesSheetVisible] = React.useState(false);
+  const [activeLikesPostId, setActiveLikesPostId] = React.useState<string | null>(null);
+  const [shareSheetVisible, setShareSheetVisible] = React.useState(false);
+  const [sharePostId, setSharePostId] = React.useState<string | null>(null);
+
   useFocusEffect(
     React.useCallback(() => {
       if (user?.id) {
         fetchFeed();
         fetchStories();
+        checkUnreadNotifications();
       }
     }, [user?.id])
   );
+
+  const checkUnreadNotifications = async () => {
+    try {
+      const { count } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user?.id)
+        .eq('is_read', false);
+      
+      setHasUnreadNotifications(count !== null && count > 0);
+    } catch (error) {
+      console.log('Unread check error:', error);
+    }
+  };
 
   const fetchFeed = async () => {
     try {
@@ -60,23 +86,23 @@ export default function HomeScreen() {
       const myId = user?.id;
       if (!myId) return;
 
-      // 1. Arkadaşlarımın ID'lerini bul
-      const { data: friendsData } = await supabase
-        .from('friendships')
-        .select('requester, receiver')
-        .eq('status', 'accepted')
-        .or(`requester.eq.${myId},receiver.eq.${myId}`);
+      // 1. Takip ettiklerimin ID'lerini bul
+      const { data: followsData } = await supabase
+        .from('user_follows')
+        .select('following_id')
+        .eq('follower_id', myId)
+        .eq('status', 'accepted');
 
       const friendIds = new Set<string>();
-      friendsData?.forEach((f: any) => {
-        friendIds.add(f.requester === myId ? f.receiver : f.requester);
+      followsData?.forEach((f: any) => {
+        friendIds.add(f.following_id);
       });
 
       // 2. Takip ettiğim Diyetisyenlerin ID'lerini bul
       const { data: dietData } = await supabase
         .from('dietitian_follows')
         .select('dietitian_id')
-        .eq('user_id', myId);
+        .eq('follower_id', myId);
 
       dietData?.forEach((d: any) => friendIds.add(d.dietitian_id));
 
@@ -174,12 +200,12 @@ export default function HomeScreen() {
 
       const enrichedPosts = postData.map(post => {
         // Bu posta ait yorumları bul ve kullanıcı adlarını ekle
-        const postComments = commentsData
-          ?.filter(c => c.post_id === post.id)
+        const postComments = (commentsData || [])
+          .filter(c => c.post_id === post.id && !c.is_hidden)
           .map(c => ({
             ...c,
             username: userMap[c.user_id]?.username || 'Kullanıcı'
-          })) || [];
+          }));
 
         return {
           ...post,
@@ -271,6 +297,16 @@ export default function HomeScreen() {
         const post = posts.find(p => p.id === postId);
         if (post) {
           await supabase.from('posts').update({ likes: post.likeCount + 1 }).eq('id', postId);
+
+          // Trigger Notification
+          if (post.user_id !== user.id) {
+            await supabase.from('notifications').insert([{
+              user_id: post.user_id,
+              actor_id: user.id,
+              type: 'like',
+              post_id: postId
+            }]);
+          }
         }
 
       } else {
@@ -305,6 +341,21 @@ export default function HomeScreen() {
       }
     });
 
+  const openCommentSheet = (postId: string, ownerId: string) => {
+    setActivePost({ id: postId, ownerId });
+    setCommentSheetVisible(true);
+  };
+
+  const openShareSheet = (postId: string) => {
+    setSharePostId(postId);
+    setShareSheetVisible(true);
+  };
+
+  const openLikesSheet = (postId: string) => {
+    setActiveLikesPostId(postId);
+    setLikesSheetVisible(true);
+  };
+
 
 
   return (
@@ -316,8 +367,29 @@ export default function HomeScreen() {
 
           <View style={styles.headerIcons}>
             {/* Bildirim İkonu */}
-            <TouchableOpacity style={{ marginRight: 15 }}>
-              <Ionicons name="notifications-outline" size={26} color={textColor} />
+            <TouchableOpacity
+              style={{ marginRight: 15 }}
+              onPress={() => {
+                setHasUnreadNotifications(false);
+                router.push('/notifications');
+              }}
+            >
+              <View>
+                <Ionicons name="notifications-outline" size={26} color={textColor} />
+                {hasUnreadNotifications && (
+                  <View style={{
+                    position: 'absolute',
+                    top: 0,
+                    right: 2,
+                    width: 10,
+                    height: 10,
+                    backgroundColor: '#ff3b30', // Modern iOS red
+                    borderRadius: 5,
+                    borderWidth: 1.5,
+                    borderColor: bgColor,
+                  }} />
+                )}
+              </View>
             </TouchableOpacity>
 
             {/* 2. ARKADAŞLAR LİSTESİNE GİDEN BUTON */}
@@ -378,7 +450,7 @@ export default function HomeScreen() {
               {posts.length === 0 ? (
                 <View style={{ padding: 40, alignItems: 'center' }}>
                   <Text style={{ color: subTextColor, textAlign: 'center' }}>
-                    Henüz gönderi yok. Arkadaş ekleyerek veya diyetisyen takip ederek akışını renklendir!
+                    Henüz gönderi yok. Başka kullanıcıları veya diyetisyenleri takip ederek akışını renklendir!
                   </Text>
                 </View>
               ) : (
@@ -429,8 +501,11 @@ export default function HomeScreen() {
                             color={post.isLiked ? primaryColor : textColor}
                           />
                         </TouchableOpacity>
-                        <TouchableOpacity onPress={() => router.push({ pathname: "/post-detail", params: { postId: post.id } })}>
+                        <TouchableOpacity onPress={() => openCommentSheet(post.id, post.user_id)}>
                           <Ionicons name="chatbubble-outline" size={26} color={textColor} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => openShareSheet(post.id)} style={{ marginLeft: 15 }}>
+                          <Ionicons name="paper-plane-outline" size={26} color={textColor} />
                         </TouchableOpacity>
                       </View>
 
@@ -445,9 +520,12 @@ export default function HomeScreen() {
 
                     {/* Beğeni Sayısı */}
                     {post.likeCount > 0 && (
-                      <View style={{ paddingHorizontal: 10, marginBottom: 5 }}>
+                      <TouchableOpacity 
+                        style={{ paddingHorizontal: 10, marginBottom: 5 }}
+                        onPress={() => openLikesSheet(post.id)}
+                      >
                         <Text style={{ fontWeight: 'bold', color: textColor }}>{post.likeCount} beğenme</Text>
-                      </View>
+                      </TouchableOpacity>
                     )}
 
                     {/* Açıklama Kısmı */}
@@ -456,22 +534,37 @@ export default function HomeScreen() {
                         <Text style={[styles.boldUserName, { color: primaryColor }]}>{post.username} </Text>
                         {post.description}
                       </Text>
+
+                      {/* ETİKETLER */}
+                      {post.tags ? (
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
+                            {post.tags.split(',').map((tag: string, index: number) => {
+                                const cleanTag = tag.trim();
+                                if(!cleanTag) return null;
+                                return (
+                                    <View key={index} style={{ backgroundColor: isDark ? '#333' : '#f0f0f0', borderRadius: 15, paddingHorizontal: 10, paddingVertical: 4, marginRight: 8, marginBottom: 5 }}>
+                                        <Text style={{ color: isDark ? '#ddd' : '#555', fontSize: 12 }}>#{cleanTag}</Text>
+                                    </View>
+                                );
+                            })}
+                        </View>
+                      ) : null}
                     </View>
 
                     {/* Yorumlar Önizleme */}
                     {post.comments && post.comments.length > 0 && (
                       <View style={{ paddingHorizontal: 10, marginTop: 5 }}>
-                        <TouchableOpacity onPress={() => router.push({ pathname: "/post-detail", params: { postId: post.id } })}>
+                        <TouchableOpacity onPress={() => openCommentSheet(post.id, post.user_id)}>
                           <Text style={{ color: subTextColor, marginBottom: 2 }}>
                             {post.comments.length} yorumun tümünü gör
                           </Text>
                         </TouchableOpacity>
-                        {post.comments.slice(0, 2).map((comment: any) => (
-                          <View key={comment.id} style={{ flexDirection: 'row', marginTop: 2 }}>
-                            <Text style={{ fontSize: 13, color: textColor }}>
-                              <Text style={{ fontWeight: 'bold', color: textColor }}>{comment.username} </Text>
-                              {comment.content}
+                        {post.comments.filter((c: any) => !c.is_hidden).slice(0, 2).map((comment: any) => (
+                          <View key={comment.id} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                            <Text style={{ fontWeight: 'bold', marginRight: 5, color: textColor, fontSize: 13 }}>
+                              {comment.username ? comment.username.replace(/^@/, '') : 'Kullanıcı'}
                             </Text>
+                            <Text style={{ color: textColor, fontSize: 13 }}>{comment.content}</Text>
                           </View>
                         ))}
                       </View>
@@ -485,6 +578,23 @@ export default function HomeScreen() {
           {/* Altta biraz boşluk bırakalım ki tab barın altında kalmasın */}
           <View style={{ height: 100 }} />
         </ScrollView>
+
+        <CommentBottomSheet
+          isVisible={commentSheetVisible}
+          onClose={() => setCommentSheetVisible(false)}
+          postId={activePost?.id || ''}
+          postOwnerId={activePost?.ownerId || ''}
+        />
+        <ShareBottomSheet
+          isVisible={shareSheetVisible}
+          onClose={() => setShareSheetVisible(false)}
+          postId={sharePostId || ''}
+        />
+        <LikesBottomSheet
+          isVisible={likesSheetVisible}
+          onClose={() => setLikesSheetVisible(false)}
+          postId={activeLikesPostId || ''}
+        />
       </SafeAreaView>
     </GestureDetector>
   );
