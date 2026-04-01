@@ -44,7 +44,6 @@ app-example
 
 # Custom
 venv/
-.env
 *.log
 debug_view.jpg
 dist/
