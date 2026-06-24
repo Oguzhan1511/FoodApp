@@ -424,4 +424,6 @@ Tüm hakları saklıdır © Oğuzhan Özdemir.
 
 **Oğuzhan Özdemir**  
 GitHub: [@Oguzhan1511](https://github.com/Oguzhan1511)
+
+
 **Mert Oruç**
