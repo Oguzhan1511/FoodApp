@@ -422,7 +422,7 @@ Tüm hakları saklıdır © Oğuzhan Özdemir.
 
 ## 👤 Geliştirici
 
-**Oğuzhan Özdemir**Mert Oruç**  
+**Oğuzhan Özdemir**/**Mert Oruç**  
 GitHub: [@Oguzhan1511](https://github.com/Oguzhan1511)
 
 
