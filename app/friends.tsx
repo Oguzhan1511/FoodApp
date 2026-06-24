@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
+import aiAvatar from '../assets/ai_avatar.jpg';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
@@ -12,9 +13,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
@@ -46,15 +47,38 @@ export default function FriendsScreen() {
   const [friends, setFriends] = useState<UserProfile[]>([]);
   const [groups, setGroups] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
-  const [unreadSenders, setUnreadSenders] = useState<Set<string>>(new Set());
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [lastMessages, setLastMessages] = useState<Record<string, { content: string, created_at: string, sender_id: string }>>({});
+  const [chatPartners, setChatPartners] = useState<UserProfile[]>([]);
+
+  // Stale closure engellemek için ref kullanalım
+  const groupsRef = React.useRef(groups);
+  const partnersRef = React.useRef<UserProfile[]>([]);
+
+  React.useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
+
+  const allPartners = React.useMemo(() => {
+    const list = [...friends];
+    chatPartners.forEach(cp => {
+      if (!list.some(p => p.id === cp.id)) {
+        list.push(cp);
+      }
+    });
+    return list;
+  }, [friends, chatPartners]);
+
+  React.useEffect(() => {
+    partnersRef.current = allPartners;
+  }, [allPartners]);
 
   // Real-time listener
   useEffect(() => {
     if (!uid) return;
 
     const channel = supabase
-      .channel('public:messages')
+      .channel(`friends-msgs-${uid}`)
       .on(
         'postgres_changes',
         {
@@ -63,14 +87,61 @@ export default function FriendsScreen() {
           table: 'messages',
           filter: `receiver_id=eq.${uid}`,
         },
-        (payload) => {
+        async (payload) => {
           const newMessage = payload.new;
-          setUnreadSenders((prev) => {
-            const next = new Set(prev);
-            next.add(newMessage.sender_id);
-            return next;
-          });
-          if (uid) fetchLastMessages(uid);
+          const partnerId = newMessage.sender_id;
+
+          // 1. Okunmamışları güncelle
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [partnerId]: (prev[partnerId] || 0) + 1
+          }));
+
+          // 2. Son mesajı anında güncelle
+          setLastMessages(prev => ({
+            ...prev,
+            [partnerId]: {
+              content: newMessage.content.startsWith('DIET_') ? '📷 Medya/Plan' : (newMessage.content.startsWith('POST_SHARE:::') ? '📸 Gönderi paylaştı' : newMessage.content),
+              created_at: newMessage.created_at,
+              sender_id: newMessage.sender_id
+            }
+          }));
+
+          // 3. Arka planda DB ile senkronize et
+          setTimeout(() => fetchLastMessages(uid), 300);
+        }
+      )
+      .subscribe((status) => {
+        if (status !== 'SUBSCRIBED') {
+           console.log("Friends subscription status:", status);
+        }
+      });
+
+    // Ayrıca kendi gönderdiğimiz mesajları da dinleyelim (Başka cihazdan veya modal'dan gönderilirse)
+    const mySentChannel = supabase
+      .channel(`friends-sent-${uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `sender_id=eq.${uid}`,
+        },
+        async (payload) => {
+          const newMessage = payload.new;
+          const partnerId = newMessage.receiver_id;
+          if (!partnerId) return;
+
+          setLastMessages(prev => ({
+            ...prev,
+            [partnerId]: {
+              content: newMessage.content.startsWith('DIET_') ? '📷 Medya/Plan' : (newMessage.content.startsWith('POST_SHARE:::') ? '📸 Gönderi paylaştı' : newMessage.content),
+              created_at: newMessage.created_at,
+              sender_id: newMessage.sender_id
+            }
+          }));
+          setTimeout(() => fetchLastMessages(uid), 300);
         }
       )
       .subscribe();
@@ -83,8 +154,11 @@ export default function FriendsScreen() {
         .eq('is_read', false);
 
       if (!error && data) {
-        const senders = new Set(data.map(m => m.sender_id));
-        setUnreadSenders(senders);
+        const counts = data.reduce((acc, curr) => {
+          acc[curr.sender_id] = (acc[curr.sender_id] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        setUnreadCounts(counts);
       }
     };
 
@@ -92,6 +166,7 @@ export default function FriendsScreen() {
 
     return () => {
       supabase.removeChannel(channel);
+      supabase.removeChannel(mySentChannel);
     };
   }, [uid]);
 
@@ -113,7 +188,7 @@ export default function FriendsScreen() {
     // 1. Fetch Direct Messages (Sender or Receiver is ME)
     const { data: directData } = await supabase
       .from('messages')
-      .select('*')
+      .select('sender_id, receiver_id, group_id, content, created_at')
       .or(`sender_id.eq.${currentUid},receiver_id.eq.${currentUid}`)
       .order('created_at', { ascending: false })
       .limit(100);
@@ -124,7 +199,7 @@ export default function FriendsScreen() {
     if (groupIds.length > 0) {
       const { data } = await supabase
         .from('messages')
-        .select('*')
+        .select('sender_id, receiver_id, group_id, content, created_at')
         .in('group_id', groupIds)
         .order('created_at', { ascending: false })
         .limit(100);
@@ -135,22 +210,61 @@ export default function FriendsScreen() {
     allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     const latestMap: Record<string, any> = {};
+    const partnerIds = new Set<string>();
 
     allMessages.forEach(msg => {
       const partnerId = msg.group_id
         ? msg.group_id
         : (msg.sender_id === currentUid ? msg.receiver_id : msg.sender_id);
 
-      if (partnerId && !latestMap[partnerId]) {
-        latestMap[partnerId] = {
-          content: msg.content.startsWith('DIET_') ? '📷 Medya/Plan' : (msg.content.startsWith('POST_SHARE:::') ? '📸 Gönderi paylaştı' : msg.content),
-          created_at: msg.created_at,
-          sender_id: msg.sender_id // Save sender_id
-        };
+      if (partnerId) {
+        partnerIds.add(partnerId);
+        if (!latestMap[partnerId]) {
+          latestMap[partnerId] = {
+            content: msg.content.startsWith('DIET_') ? '📷 Medya/Plan' : (msg.content.startsWith('POST_SHARE:::') ? '📸 Gönderi paylaştı' : msg.content),
+            created_at: msg.created_at,
+            sender_id: msg.sender_id
+          };
+        }
       }
     });
 
-    setLastMessages(latestMap);
+    // Sadece daha güncel olan verileri güncelle (Race condition engelleme)
+    setLastMessages(prev => {
+      const newMap = { ...prev };
+      Object.keys(latestMap).forEach(id => {
+        if (!newMap[id] || new Date(latestMap[id].created_at) >= new Date(newMap[id].created_at)) {
+          newMap[id] = latestMap[id];
+        }
+      });
+      return newMap;
+    });
+
+    // Fetch profiles for all partner IDs that are not groups
+    const userPartnerIds = Array.from(partnerIds).filter(id => !groups.some(g => g.id === id) && id !== 'FOOD_AI');
+    if (userPartnerIds.length > 0) {
+      // 1. Diyetisyenleri kontrol et
+      const { data: dietitianIds } = await supabase
+        .from('dietitians')
+        .select('id')
+        .in('id', userPartnerIds);
+      
+      const dIds = new Set(dietitianIds?.map(d => d.id) || []);
+      
+      // 2. Sadece diyetisyen OLMAYANLARI getir
+      const filteredPartnerIds = userPartnerIds.filter(id => !dIds.has(id));
+
+      if (filteredPartnerIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, username, ad, soyad, avatar_url')
+          .in('id', filteredPartnerIds);
+        
+        if (profiles) {
+          setChatPartners(profiles as any);
+        }
+      }
+    }
   };
 
   const fetchGroups = async (currentUid: string) => {
@@ -324,9 +438,11 @@ export default function FriendsScreen() {
   };
 
   // MERGE & FILTER
+  // Combined list should use both friends and chatPartners to ensure chats remain visible
+
   const combinedList = [
     ...groups.map(g => ({ type: 'group', id: g.id, name: g.name, username: null, data: g })),
-    ...friends.map(f => ({ type: 'friend', id: f.id, name: `${f.ad} ${f.soyad}`, username: f.username, data: f }))
+    ...allPartners.map(f => ({ type: 'friend', id: f.id, name: `${f.ad} ${f.soyad}`, username: f.username, data: f }))
   ];
 
   const filteredList = combinedList.filter(item =>
@@ -384,7 +500,7 @@ export default function FriendsScreen() {
 
       {/* Calculate display list filtering out empty chats */}
       {(() => {
-        const displayList = filteredList
+        let displayList: any[] = filteredList
           .filter(item => item.type === 'group' || lastMessages[item.id])
           .sort((a, b) => {
             const msgA = lastMessages[a.id];
@@ -394,13 +510,30 @@ export default function FriendsScreen() {
             return timeB - timeA;
           });
 
-        return (
-          <>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 25, marginBottom: 10 }}>
-              <Text style={[styles.subtitle, { color: isDark ? '#ff4d4d' : THEME_COLOR, marginTop: 0, marginBottom: 0 }]}>
-                Sohbetler ({displayList.length})
-              </Text>
-              <TouchableOpacity onPress={() => router.push('/create-chat')}>
+        // --- FOOD AI INJECTION ---
+        const aiEntry = {
+          type: 'ai',
+          id: 'FOOD_AI',
+          name: 'Lezzet Asistanı',
+          username: 'Lezzet Asistanı',
+          data: { 
+            id: 'FOOD_AI',
+            avatar_url: aiAvatar
+          }
+        };
+
+        if (!searchQuery || aiEntry.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+          displayList = [aiEntry, ...displayList];
+        }
+        // -------------------------
+
+    return (
+      <>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 25, marginBottom: 10 }}>
+          <Text style={[styles.subtitle, { color: isDark ? '#ff4d4d' : THEME_COLOR, marginTop: 0, marginBottom: 0 }]}>
+            Sohbetler ({displayList.length})
+          </Text>
+              <TouchableOpacity onPress={() => router.push('/create-chat' as any)}>
                 <Ionicons name="create-outline" size={24} color={isDark ? '#ff4d4d' : THEME_COLOR} />
               </TouchableOpacity>
             </View>
@@ -412,15 +545,35 @@ export default function FriendsScreen() {
             ) : (
               displayList.map((item) => {
                 const isGroup = item.type === 'group';
-                const hasUnread = unreadSenders.has(item.id);
+                const unreadCount = unreadCounts[item.id] || 0;
+                const hasUnread = unreadCount > 0;
                 const lastMsg = lastMessages[item.id];
+                const isAi = item.type === 'ai';
                 const avatarUrl = isGroup ? null : item.data.avatar_url;
                 const defaultImage = `https://ui-avatars.com/api/?name=${encodeURIComponent(item.name)}&background=random&color=fff`;
 
                 return (
                   <TouchableOpacity
                     key={`${item.type}-${item.id}`}
-                    style={[styles.chatRow, { borderBottomColor: borderColor }]}
+                    style={[
+                      styles.chatRow, 
+                      { borderBottomColor: borderColor },
+                      isAi && {
+                        backgroundColor: isDark ? '#12081a' : '#fcfaff',
+                        borderLeftWidth: 4,
+                        borderLeftColor: '#9c27b0',
+                        borderRadius: 12,
+                        marginVertical: 6,
+                        marginHorizontal: 0,
+                        paddingLeft: 12,
+                        // Modern Soft Shadow
+                        shadowColor: "#000",
+                        shadowOffset: { width: 0, height: 2 },
+                        shadowOpacity: 0.05,
+                        shadowRadius: 10,
+                        elevation: 2,
+                      }
+                    ]}
                     onLongPress={() => {
                       if (isGroup) {
                         Alert.alert(
@@ -475,35 +628,72 @@ export default function FriendsScreen() {
                     }}
                     onPress={() => {
                       if (isGroup) {
-                        router.push({ pathname: '/chat', params: { groupId: item.id, groupName: item.name, avatarUrl: avatarUrl } });
+                        router.push({ pathname: '/chat' as any, params: { groupId: item.id, groupName: item.name, avatarUrl: avatarUrl } });
+                      } else if (item.type === 'ai') {
+                        router.push({ pathname: '/chat' as any, params: { userId: 'FOOD_AI', username: 'Lezzet Asistanı', avatarUrl: 'ai_avatar' } });
                       } else {
                         const f = item.data;
-                        setUnreadSenders(prev => {
-                          const next = new Set(prev);
-                          next.delete(f.id);
+                        setUnreadCounts(prev => {
+                          const next = { ...prev };
+                          delete next[f.id];
                           return next;
                         });
-                        router.push({ pathname: "/chat", params: { userId: f.id, username: f.username, avatarUrl: f.avatar_url } });
+                        router.push({ pathname: '/chat' as any, params: { userId: f.id, username: f.username, avatarUrl: f.avatar_url } });
                       }
                     }}
                   >
-                    <Image
-                      source={{ uri: avatarUrl || defaultImage }}
-                      style={styles.avatar}
-                      contentFit="cover"
-                    />
+                    <View>
+                      <Image
+                        source={avatarUrl || defaultImage}
+                        style={styles.avatar}
+                        contentFit="cover"
+                      />
+                    </View>
                     <View style={styles.chatInfo}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                        <Text style={[styles.chatName, { color: textColor }]}>{item.name}</Text>
-                        <Text style={styles.timeText}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Text style={[styles.chatName, { color: textColor }]}>{item.name}</Text>
+                          {isAi && (
+                            <View style={{ 
+                              backgroundColor: '#9c27b015', 
+                              paddingHorizontal: 6, 
+                              paddingVertical: 2, 
+                              borderRadius: 6, 
+                              marginLeft: 5,
+                              borderWidth: 1,
+                              borderColor: '#9c27b033'
+                            }}>
+                              <Text style={{ color: '#9c27b0', fontSize: 10, fontWeight: 'bold' }}>AI</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={[styles.timeText, hasUnread && { color: '#25D366' }]}>
                           {lastMsg ? new Date(lastMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                         </Text>
                       </View>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 }}>
-                        <Text style={[styles.lastMsgText, { color: subTextColor }]} numberOfLines={1}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                        <Text 
+                          style={[
+                            styles.lastMsgText, 
+                            { color: subTextColor, fontStyle: hasUnread ? 'italic' : 'normal', flex: 1, marginRight: 10 }
+                          ]} 
+                          numberOfLines={1}
+                        >
                           {lastMsg ? (lastMsg.sender_id === uid ? `Siz: ${lastMsg.content}` : lastMsg.content) : 'Sohbet başlatın...'}
                         </Text>
-                        {hasUnread && <View style={styles.unreadDot} />}
+                        {hasUnread && (
+                          <View style={{
+                            backgroundColor: '#25D366',
+                            borderRadius: 12,
+                            minWidth: 24,
+                            height: 24,
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            paddingHorizontal: 6,
+                          }}>
+                            <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>{unreadCount}</Text>
+                          </View>
+                        )}
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -581,9 +771,12 @@ const styles = StyleSheet.create({
     marginRight: 10
   },
   unreadDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: THEME_COLOR // '#800020'
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#800020', // Bordo/Kırmızı tonu
+    marginLeft: 10,
+    borderWidth: 1,
+    borderColor: '#fff'
   },
 });

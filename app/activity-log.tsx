@@ -11,9 +11,9 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { supabase } from './services/supabaseConfig';
-import { useTheme } from './ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { supabase } from '../services/supabaseConfig';
+import { useTheme } from '../context/ThemeContext';
 
 type TabType = 'likes' | 'comments' | 'saved';
 
@@ -136,7 +136,7 @@ export default function ActivityLogScreen() {
         return (
             <TouchableOpacity
                 style={[styles.itemContainer, { borderBottomColor: borderColor }]}
-                onPress={() => router.push({ pathname: '/post-detail', params: { postId: item.postId } })}
+                onPress={() => router.push({ pathname: '/post-detail' as any, params: { postId: item.postId } })}
             >
                 <Image
                     source={{ uri: item.postImage }}

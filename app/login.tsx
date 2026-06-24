@@ -9,18 +9,21 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
+  Modal,
   Platform,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { auth } from './services/firebaseConfig';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { auth } from '../services/firebaseConfig';
+import { supabase } from '../services/supabaseConfig';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -34,19 +37,8 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // Google Auth Setup (Expo Proxy used for Expo Go support)
-  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    androidClientId: 'GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
-    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
-    webClientId: 'GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com', // Yeni Web ID buraya gelecek
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleLogin(response.params.id_token);
-    }
-  }, [response]);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
 
   const handleGoogleLogin = async (idToken: string) => {
     setLoading(true);
@@ -55,28 +47,45 @@ export default function LoginScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      const { data: profile } = await supabase
+      // 1. Supabase Profilini Kontrol Et
+      let { data: profile, error: fetchError } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.uid)
         .single();
 
-      if (!profile) {
-        const autoUsername = (user.email?.split('@')[0] || 'user') + Math.floor(Math.random() * 1000);
-        await supabase
-          .from('profiles')
-          .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }]);
+      if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116: No rows found
+        console.error("Supabase Profil Çekme Hatası:", fetchError);
       }
 
+      if (!profile) {
+        const autoUsername = (user.email?.split('@')[0] || 'user') + Math.floor(Math.random() * 1000);
+        const { data: newProfile, error: insertError } = await supabase
+          .from('profiles')
+          .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }])
+          .select()
+          .single();
+
+        if (insertError) {
+          console.error("Supabase Profil Oluşturma Hatası:", insertError);
+          // Hata olsa bile Firebase ile devam etmeye çalışalım, ama uyarı verelim
+        } else {
+          profile = newProfile;
+        }
+      }
+
+      // 2. AuthContext'e bildir
       login({
         id: user.uid,
         username: profile?.username || (user.email?.split('@')[0] || 'user'),
+        avatar_url: user.photoURL,
+        role: profile?.role || 'user'
       });
 
-      router.replace('/(tabs)/home');
+      router.replace('/(tabs)/home' as any);
     } catch (err: any) {
       console.error("Google Login Error:", err.message);
-      Alert.alert("Giriş Başarısız", "Google ile giriş yapılırken bir hata oluştu.");
+      Alert.alert("Giriş Başarısız", "Google ile giriş yapılırken bir hata oluştu: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -94,16 +103,18 @@ export default function LoginScreen() {
       const firebaseUser = userCredential.user;
 
       let finalUsername = firebaseUser.email || '';
+      let finalRole = 'user';
 
       try {
-        const { data } = await supabase
+        const { data, error: profileError } = await supabase
           .from('profiles')
-          .select('username')
+          .select('username, role')
           .eq('id', firebaseUser.uid)
           .single();
 
-        if (data?.username) {
+        if (data) {
           finalUsername = data.username;
+          finalRole = data.role;
         }
       } catch (dbError) {
         console.log("Veritabanı bağlantı hatası:", dbError);
@@ -111,10 +122,11 @@ export default function LoginScreen() {
 
       login({
         id: firebaseUser.uid,
-        username: finalUsername
+        username: finalUsername,
+        role: finalRole
       });
 
-      router.replace('/(tabs)/home');
+      router.replace('/(tabs)/home' as any);
 
     } catch (error: any) {
       console.error("Giriş Hatası:", error);
@@ -131,6 +143,18 @@ export default function LoginScreen() {
     }
   };
 
+  // Google Auth Setup (Expo Proxy used for Expo Go support)
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  });
+
+  useEffect(() => {
+    if (response?.type === 'success') {
+      handleGoogleLogin(response.params.id_token);
+    }
+  }, [response]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#000000' : '#FFFFFF' }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -138,7 +162,8 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.flex}
       >
-        <View style={styles.innerContainer}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={styles.innerContainer}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.back()}
@@ -188,15 +213,43 @@ export default function LoginScreen() {
 
             <TouchableOpacity
               style={styles.forgotPasswordContainer}
-              onPress={() => router.push('/forgot-password')}
+              onPress={() => router.push('/forgot-password' as any)}
             >
               <Text style={[styles.forgotPasswordText, { color: isDark ? '#AAA' : '#666' }]}>Şifremi Unuttum?</Text>
             </TouchableOpacity>
 
+            {/* Gizlilik Politikası Onay Checkbox */}
             <TouchableOpacity
-              style={[styles.button, styles.primaryButton, !isDark && styles.shadow, loading && { opacity: 0.7 }]}
+              style={styles.privacyRow}
+              onPress={() => setPrivacyAccepted(prev => !prev)}
+              activeOpacity={0.7}
+            >
+              <View style={[
+                styles.checkbox,
+                { borderColor: isDark ? '#555' : '#800020' },
+                privacyAccepted && { backgroundColor: '#800020', borderColor: '#800020' }
+              ]}>
+                {privacyAccepted && <Ionicons name="checkmark" size={14} color="#fff" />}
+              </View>
+              <Text style={[styles.privacyText, { color: isDark ? '#aaa' : '#555' }]}>
+                {'Okudum, '}
+                <Text
+                  style={[styles.privacyLink, { color: isDark ? '#ff6b8a' : '#800020' }]}
+                  onPress={() => setShowPrivacyModal(true)}
+                >
+                  Gizlilik Politikasını
+                </Text>
+                {' kabul ediyorum.'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.button, styles.primaryButton, !isDark && styles.shadow,
+                (loading || !privacyAccepted) && { opacity: 0.5 }
+              ]}
               onPress={handleLogin}
-              disabled={loading}
+              disabled={loading || !privacyAccepted}
               activeOpacity={0.8}
             >
               {loading ? (
@@ -215,9 +268,16 @@ export default function LoginScreen() {
             <TouchableOpacity
               style={[styles.googleBtn, {
                 backgroundColor: isDark ? '#111' : '#FFF',
-                borderColor: isDark ? '#333' : '#EEE'
+                borderColor: isDark ? '#333' : '#EEE',
+                opacity: (!request || loading || !privacyAccepted) ? 0.5 : 1
               }]}
-              onPress={() => promptAsync()}
+              onPress={() => {
+                if (!privacyAccepted) {
+                  Alert.alert('Gizlilik Politikası', 'Devam etmek için gizlilik politikasını kabul etmelisiniz.');
+                  return;
+                }
+                promptAsync();
+              }}
               disabled={!request || loading}
               activeOpacity={0.7}
             >
@@ -228,11 +288,44 @@ export default function LoginScreen() {
 
           <View style={styles.footer}>
             <Text style={[styles.footerText, { color: isDark ? '#666' : '#999' }]}>Hesabın yok mu? </Text>
-            <TouchableOpacity onPress={() => router.push('/register')}>
+            <TouchableOpacity onPress={() => router.push('/register' as any)}>
               <Text style={[styles.linkText, { color: isDark ? '#FFF' : '#800020' }]}>Kayıt Ol</Text>
             </TouchableOpacity>
           </View>
         </View>
+        </ScrollView>
+
+        <Modal
+          visible={showPrivacyModal}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setShowPrivacyModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContent, { backgroundColor: isDark ? '#111' : '#FFF' }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: isDark ? '#FFF' : '#1A1A1A' }]}>Gizlilik Politikası</Text>
+                <TouchableOpacity onPress={() => setShowPrivacyModal(false)}>
+                  <Ionicons name="close" size={24} color={isDark ? '#FFF' : '#333'} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+                <Text style={[styles.policyText, { color: isDark ? '#AAA' : '#444' }]}>
+                  {`FoodApp Gizlilik Politikası\n\nSon güncelleme: 30 Nisan 2025\n\n1. Topladığımız Veriler\n- Hesap Bilgileri: Ad, soyad, e-posta adresi.\n- Google ile Giriş: Sadece ad ve e-posta adresinizi alırız.\n- Sağlık Verileri: Girdiğiniz kalori ve besin değerleri sadece size özel saklanır.\n\n2. Verileri Nasıl Kullanırız\n- Hesabınızı yönetmek.\n- Diyetisyen iletişimini sağlamak.\n- Uygulama performansını iyileştirmek.\n\n3. Veri Güvenliği\nVerileriniz şifreli bağlantılar üzerinden iletilir ve endüstri standartlarında korunur.\n\n4. Haklarınız\nİstediğiniz zaman verilerinizin silinmesini talep edebilirsiniz.\n\nİletişim: oguzhan@gmail.com`}
+                </Text>
+              </ScrollView>
+              <TouchableOpacity 
+                style={[styles.modalButton, { backgroundColor: '#800020' }]}
+                onPress={() => {
+                  setPrivacyAccepted(true);
+                  setShowPrivacyModal(false);
+                }}
+              >
+                <Text style={styles.modalButtonText}>Okudum, Kabul Ediyorum</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -361,5 +454,76 @@ const styles = StyleSheet.create({
   linkText: {
     fontWeight: '700',
     fontSize: 15,
-  }
+  },
+  privacyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    marginTop: 4,
+    gap: 10,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  privacyText: {
+    fontSize: 13,
+    flex: 1,
+    lineHeight: 19,
+  },
+  privacyLink: {
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxHeight: '80%',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  modalBody: {
+    marginBottom: 20,
+  },
+  policyText: {
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  modalButton: {
+    height: 54,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
 });

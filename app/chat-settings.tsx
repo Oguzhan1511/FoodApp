@@ -13,9 +13,9 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
@@ -26,6 +26,7 @@ export default function ChatSettingsScreen() {
   const { theme } = useTheme();
   const [groupRole, setGroupRole] = React.useState<string | null>(null);
   const [selectedTheme, setSelectedTheme] = React.useState(THEME_COLOR);
+  const [isMuted, setIsMuted] = React.useState(false);
 
   const isDark = theme === 'dark';
   const bgColor = isDark ? '#121212' : '#f8f9fa';
@@ -33,11 +34,13 @@ export default function ChatSettingsScreen() {
   const subTextColor = isDark ? '#aaaaaa' : '#666666';
   const cardBg = isDark ? '#1e1e1e' : '#ffffff';
   const borderColor = isDark ? '#333333' : '#eeeeee';
+  const primaryColor = isDark ? '#ff4d4d' : '#800020';
 
   const targetId = (groupId || userId) as string;
 
   React.useEffect(() => {
     loadTheme();
+    loadMuteStatus();
   }, [targetId]);
 
   const loadTheme = async () => {
@@ -48,6 +51,21 @@ export default function ChatSettingsScreen() {
   const saveTheme = async (color: string) => {
     setSelectedTheme(color);
     await AsyncStorage.setItem(`chatTheme_${user?.id}_${targetId}`, color);
+  };
+  
+  const loadMuteStatus = async () => {
+    const muted = await AsyncStorage.getItem(`chatMuted_${user?.id}_${targetId}`);
+    setIsMuted(muted === 'true');
+  };
+
+  const toggleMute = async () => {
+    const newValue = !isMuted;
+    setIsMuted(newValue);
+    await AsyncStorage.setItem(`chatMuted_${user?.id}_${targetId}`, String(newValue));
+    Alert.alert(
+      newValue ? "Sessize Alındı" : "Ses Açıldı",
+      newValue ? "Bu sohbetten gelen bildirimler artık sessize alınacak." : "Bu sohbetten tekrar bildirim alacaksınız."
+    );
   };
 
   const themeColors = [
@@ -140,9 +158,9 @@ export default function ChatSettingsScreen() {
             label="Profili Görüntüle" 
             onPress={() => {
               if (groupId) {
-                router.push({ pathname: '/group-detail', params: { groupId, groupName } });
+                router.push({ pathname: '/group-detail' as any, params: { groupId, groupName } });
               } else {
-                router.push({ pathname: '/user-profile', params: { userId } });
+                router.push({ pathname: '/user-profile' as any, params: { userId } });
               }
             }} 
           />
@@ -168,16 +186,17 @@ export default function ChatSettingsScreen() {
             </ScrollView>
           </View>
           <OptionItem 
-            icon="notifications-outline" 
-            label="Bildirimleri Sessize Al" 
-            onPress={() => Alert.alert("Bilgi", "Bu özellik yakında eklenecek.")} 
+            icon={isMuted ? "notifications-off-outline" : "notifications-outline"} 
+            label={isMuted ? "Sesi Aç" : "Bildirimleri Sessize Al"} 
+            onPress={toggleMute}
+            color={isMuted ? primaryColor : textColor}
           />
           <OptionItem 
             icon="search-outline" 
             label="Sohbette Ara" 
             onPress={() => {
               router.push({ 
-                pathname: '/chat', 
+                pathname: '/chat' as any, 
                 params: { 
                   userId, 
                   groupId,

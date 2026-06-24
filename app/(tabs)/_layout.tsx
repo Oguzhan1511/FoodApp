@@ -1,7 +1,7 @@
 import { FontAwesome5, Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { useTheme } from '../ThemeContext';
+import { useTheme } from '../../context/ThemeContext';
 
 export default function TabLayout() {
   const { theme } = useTheme();
@@ -68,14 +68,12 @@ export default function TabLayout() {
 
 
 
-      {/* Profil sayfası menüde görünmesin ama erişilebilir olsun istiyorsanız aşağıdakini ekleyin:
-          Eğer menüde 6. eleman olarak istiyorsanız null yapmayın.
-          Şu an menüde yer kalmadığı için bunu gizli tutuyorum (href: null).
-      */}
+      
       <Tabs.Screen
         name="profile"
         options={{
-          // Menüde görünmez, ama linkle gidilebilir
+          title: 'Profil',
+          tabBarIcon: ({ color }) => <Ionicons name="person" size={24} color={color} />,
         }}
       />
 

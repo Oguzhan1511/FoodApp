@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useRouter, useFocusEffect } from 'expo-router';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,9 +12,9 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-import { useAuth } from '../AuthContext';
-import { useTheme } from '../ThemeContext';
-import { supabase } from '../services/supabaseConfig';
+import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
+import { supabase } from '../../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
@@ -62,6 +62,7 @@ export default function DietitianScreen() {
 
   const [isDietitian, setIsDietitian] = useState(false);
   const [inboxUsers, setInboxUsers] = useState<InboxUser[]>([]);
+  const [userDietitianChats, setUserDietitianChats] = useState<any[]>([]);
 
   useEffect(() => {
     if (uid) {
@@ -69,14 +70,51 @@ export default function DietitianScreen() {
     }
   }, [uid]);
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
     if (isDietitian) {
       fetchInbox();
     } else {
       fetchDietitians();
-      if (uid) fetchFollowingStatus();
+      if (uid) {
+        fetchFollowingStatus();
+        fetchUserDietitianChats();
+      }
     }
   }, [isDietitian, uid]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
+
+  useEffect(() => {
+    if (!uid) return;
+
+    // Gerçek zamanlı mesaj dinleyicisi
+    const channel = supabase
+      .channel(`dietitian-realtime-${uid}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const newMsg = payload.new;
+          if (newMsg.receiver_id === uid || newMsg.sender_id === uid) {
+            // Mesaj gelince (veya gidince) listeleri yenile
+            if (isDietitian) {
+              fetchInbox();
+            } else {
+              fetchUserDietitianChats();
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [uid, isDietitian]);
 
 
   const checkIfDietitian = async () => {
@@ -89,69 +127,115 @@ export default function DietitianScreen() {
     if (data) setIsDietitian(true);
   };
 
+  // Diyetisyen'in mesaj kutusunu çek (kendisine yazan kullanıcılar)
   const fetchInbox = async () => {
+    if (!uid) return;
     setLoading(true);
     try {
-      // 1. Fetch messages where receiver is me
-      const { data: messages, error } = await supabase
+      // 1. Diyetisyene gelen/giden tüm mesajları çek
+      const { data: messages } = await supabase
         .from('messages')
-        .select('sender_id, content, created_at')
-        .eq('receiver_id', uid)
+        .select('*')
+        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`)
         .order('created_at', { ascending: false });
-
-      if (error) throw error;
 
       if (!messages || messages.length === 0) {
         setInboxUsers([]);
-        setLoading(false);
         return;
       }
 
-      // Group by sender to find unique users
-      const uniqueSenders = new Map();
+      // 2. Her partner'dan en son mesajı bul ve okunmamışları say
+      const latestMap = new Map<string, any>();
+      const unreadCounts = new Map<string, number>();
+      
       messages.forEach(msg => {
-        if (!uniqueSenders.has(msg.sender_id)) {
-          uniqueSenders.set(msg.sender_id, msg);
+        const partnerId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
+        if (partnerId && !latestMap.has(partnerId)) {
+          latestMap.set(partnerId, msg);
+        }
+        if (msg.receiver_id === uid && !msg.is_read) {
+          unreadCounts.set(partnerId, (unreadCounts.get(partnerId) || 0) + 1);
         }
       });
 
-      const senderIds = Array.from(uniqueSenders.keys());
+      const partnerIds = Array.from(latestMap.keys());
+      if (partnerIds.length === 0) return;
 
-      // 2. Fetch Profiles of these senders
+      // 3. Partner profillerini çek
       const { data: profiles } = await supabase
         .from('profiles')
         .select('id, username, ad, soyad, avatar_url')
-        .in('id', senderIds);
+        .in('id', partnerIds);
 
-      // 3. Check Friendship status to exclude friends?
-      // The request said: "diyetisyene mesaj atan kullanıcıları görsün arkadaşı olmayan"
-      // So we filter out friends.
-
-      const { data: friends } = await supabase
-        .from('friendships')
-        .select('requester, receiver')
-        .or(`requester.eq.${uid},receiver.eq.${uid}`)
-        .eq('status', 'accepted');
-
-      const friendIds = new Set();
-      friends?.forEach(f => {
-        friendIds.add(f.requester === uid ? f.receiver : f.requester);
-      });
-
-      const filteredProfiles = profiles?.filter(p => !friendIds.has(p.id)) || [];
-
-      const list = filteredProfiles.map(p => ({
-        ...p,
-        last_message: uniqueSenders.get(p.id)?.content,
-        message_time: uniqueSenders.get(p.id)?.created_at
-      }));
-
-      setInboxUsers(list);
-
-    } catch (error) {
-      console.error("Inbox load error:", error);
+      if (profiles) {
+        const inboxList: any[] = profiles.map(p => ({
+          id: p.id,
+          username: p.username,
+          ad: p.ad || '',
+          soyad: p.soyad || '',
+          avatar_url: p.avatar_url,
+          last_message: latestMap.get(p.id)?.content,
+          message_time: latestMap.get(p.id)?.created_at,
+          unread_count: unreadCounts.get(p.id) || 0
+        }));
+        // Sort by message time
+        inboxList.sort((a, b) => new Date(b.message_time).getTime() - new Date(a.message_time).getTime());
+        setInboxUsers(inboxList);
+      }
+    } catch (e) {
+      console.error('fetchInbox hatası:', e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUserDietitianChats = async () => {
+    if (!uid) return;
+    try {
+      // 1. Kullanıcının tüm mesajlarını çek
+      const { data: messages } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`)
+        .order('created_at', { ascending: false });
+
+      if (!messages || messages.length === 0) return;
+
+      // 2. Partner ID'leri bul ve okunmamışları say
+      const partnerIds = new Set<string>();
+      const latestMap = new Map();
+      const unreadCounts = new Map<string, number>();
+      
+      messages.forEach(msg => {
+        const pId = msg.sender_id === uid ? msg.receiver_id : msg.sender_id;
+        if (pId && !latestMap.has(pId)) {
+          latestMap.set(pId, msg);
+          partnerIds.add(pId);
+        }
+        if (msg.receiver_id === uid && !msg.is_read) {
+          unreadCounts.set(pId, (unreadCounts.get(pId) || 0) + 1);
+        }
+      });
+
+      // 3. Hangileri diyetisyen kontrol et
+      const { data: dietitians } = await supabase
+        .from('dietitians')
+        .select('id, username, first_name, last_name, profile_picture')
+        .in('id', Array.from(partnerIds));
+
+      if (dietitians && dietitians.length > 0) {
+        const chats = dietitians.map(d => ({
+          ...d,
+          last_message: latestMap.get(d.id)?.content,
+          message_time: latestMap.get(d.id)?.created_at,
+          unread_count: unreadCounts.get(d.id) || 0
+        }));
+        // Sort by message time
+        chats.sort((a, b) => new Date(b.message_time).getTime() - new Date(a.message_time).getTime());
+        setUserDietitianChats(chats);
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -159,37 +243,51 @@ export default function DietitianScreen() {
   // 1. Diyetisyenleri Çek (veya Ara)
   const fetchDietitians = async (queryText = '') => {
     setLoading(true);
-    let query = supabase
-      .from('dietitians')
-      .select('id, username, first_name, last_name, is_verified');
+    try {
+      let query = supabase
+        .from('dietitians')
+        .select('id, username, first_name, last_name, is_verified, profile_picture');
 
-    if (queryText.length > 0) {
-      query = query.or(`username.ilike.%${queryText}%,first_name.ilike.%${queryText}%,last_name.ilike.%${queryText}%`);
+      if (queryText.length > 0) {
+        query = query.or(`username.ilike.%${queryText}%,first_name.ilike.%${queryText}%,last_name.ilike.%${queryText}%`);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('Diyetisyenleri çekme hatası:', error.message, error.code, error.hint);
+      } else {
+        setDietitians(data || []);
+      }
+    } catch (e) {
+      console.error('Diyetisyen fetch exception:', e);
+    } finally {
+      setLoading(false);
     }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('Diyetisyenleri çekme hatası:', error);
-    } else {
-      setDietitians(data || []);
-    }
-    setLoading(false);
   };
 
   // 2. Takip Durumlarını Çek
   const fetchFollowingStatus = async () => {
     if (!uid) return;
-    const { data, error } = await supabase
-      .from('dietitian_follows')
-      .select('dietitian_id')
-      .eq('follower_id', uid);
+    try {
+      const { data, error } = await supabase
+        .from('dietitian_follows')
+        .select('dietitian_id')
+        .eq('follower_id', uid);
 
-    if (error) {
-      console.error('Takip verisi hatası:', error);
-    } else if (data) {
-      const ids = new Set(data.map((item) => item.dietitian_id));
-      setFollowingIds(ids);
+      if (error) {
+        // Tablo yoksa sessizce geç
+        if (error.code === '42P01' || error.message?.includes('does not exist')) {
+          console.log('dietitian_follows tablosu henüz oluşturulmamış, atlanıyor.');
+          return;
+        }
+        console.error('Takip verisi hatası:', error.message, error.code, error.hint);
+      } else if (data) {
+        const ids = new Set(data.map((item) => item.dietitian_id));
+        setFollowingIds(ids);
+      }
+    } catch (e) {
+      console.error('Takip fetch exception:', e);
     }
   };
 
@@ -246,18 +344,19 @@ export default function DietitianScreen() {
     return (
       <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderColor }]}>
         <View style={styles.infoContainer}>
-          <TouchableOpacity onPress={() => router.push({ pathname: '/user-profile', params: { userId: item.id } })}>
-            <View style={styles.avatarPlaceholder}>
-              <Text style={{ fontSize: 20, color: '#white', fontWeight: 'bold' }}>
-                {item.first_name?.[0]}{item.last_name?.[0]}
-              </Text>
-            </View>
+          <TouchableOpacity onPress={() => router.push({ pathname: '/user-profile' as any, params: { userId: item.id } })}>
+            <Image
+              source={{ uri: item.profile_picture || `https://ui-avatars.com/api/?name=${item.first_name}+${item.last_name}&background=random&color=fff` }}
+              style={styles.inboxAvatar}
+            />
           </TouchableOpacity>
           <View>
-            <Text style={[styles.name, { color: textColor }]}>
-              {item.first_name} {item.last_name}
-              {item.is_verified && <Ionicons name="checkmark-circle" size={16} color="#4CAF50" style={{ marginLeft: 5 }} />}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
+              <Text numberOfLines={1} style={[styles.name, { color: textColor, marginRight: 4 }]}>
+                {item.first_name} {item.last_name}
+              </Text>
+              {item.is_verified && <Ionicons name="checkmark-circle" size={15} color="#4CAF50" />}
+            </View>
             <Text style={[styles.username, { color: subTextColor }]}>{item.username ? item.username.replace(/^@/, '') : 'Diyetisyen'}</Text>
           </View>
         </View>
@@ -265,9 +364,16 @@ export default function DietitianScreen() {
         <View style={styles.actionButtons}>
           <TouchableOpacity
             style={[styles.messageBtn, { backgroundColor: isDark ? '#333' : '#f0f0f0' }]}
-            onPress={() => router.push({ pathname: '/chat', params: { userId: item.id, username: item.username } })}
+            onPress={() => router.push({ 
+              pathname: '/chat' as any, 
+              params: { 
+                userId: item.id, 
+                username: `${item.first_name} ${item.last_name}`, 
+                avatarUrl: item.profile_picture 
+              } 
+            })}
           >
-            <Ionicons name="chatbubble-ellipses-outline" size={22} color={primaryColor} />
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color={primaryColor} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.followButton, isFollowing && styles.followingButton, { backgroundColor: isFollowing ? 'transparent' : primaryColor, borderColor: primaryColor }]}
@@ -287,30 +393,55 @@ export default function DietitianScreen() {
     );
   };
 
-  const renderInboxItem = ({ item }: { item: InboxUser }) => (
-    <TouchableOpacity
-      style={[styles.card, { backgroundColor: cardBg, borderColor: borderColor }]}
-      onPress={() => router.push({ pathname: '/chat', params: { userId: item.id, username: item.username } })}
-    >
-      <View style={styles.infoContainer}>
-        <Image
-          source={{ uri: item.avatar_url || `https://ui-avatars.com/api/?name=${item.ad}+${item.soyad}` }}
-          style={styles.inboxAvatar}
-        />
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={[styles.name, { color: textColor }]}>{item.ad} {item.soyad}</Text>
-            <Text style={{ fontSize: 10, color: subTextColor }}>
-              {item.message_time && new Date(item.message_time).toLocaleDateString()}
-            </Text>
+  const renderInboxItem = ({ item }: { item: InboxUser | any }) => {
+    const hasUnread = (item.unread_count || 0) > 0;
+    return (
+      <TouchableOpacity
+        style={[styles.card, { backgroundColor: cardBg, borderColor: borderColor }]}
+        onPress={() => router.push({ 
+          pathname: '/chat' as any, 
+          params: { 
+            userId: item.id, 
+            username: `${item.ad || item.first_name || ''} ${item.soyad || item.last_name || ''}`.trim(), 
+            avatarUrl: item.avatar_url || item.profile_picture 
+          } 
+        })}
+      >
+        <View style={styles.infoContainer}>
+          <Image
+            source={{ uri: item.avatar_url || item.profile_picture || `https://ui-avatars.com/api/?name=${item.ad || item.first_name}+${item.soyad || item.last_name}` }}
+            style={styles.inboxAvatar}
+          />
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={[styles.name, { color: textColor }]}>{item.ad || item.first_name} {item.soyad || item.last_name}</Text>
+              <Text style={{ fontSize: 10, color: hasUnread ? '#25D366' : subTextColor }}>
+                {item.message_time && new Date(item.message_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+              <Text numberOfLines={1} style={{ color: subTextColor, fontSize: 13, fontStyle: hasUnread ? 'italic' : 'normal', flex: 1, marginRight: 10 }}>
+                {item.last_message}
+              </Text>
+              {hasUnread && (
+                <View style={{
+                  backgroundColor: '#25D366',
+                  borderRadius: 10,
+                  minWidth: 20,
+                  height: 20,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  paddingHorizontal: 5,
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>{item.unread_count}</Text>
+                </View>
+              )}
+            </View>
           </View>
-          <Text numberOfLines={1} style={{ color: subTextColor, fontSize: 13, marginTop: 2 }}>
-            {item.last_message}
-          </Text>
         </View>
-      </View>
-    </TouchableOpacity>
-  );
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: bgColor }]}>
@@ -350,6 +481,64 @@ export default function DietitianScreen() {
             keyExtractor={(item) => item.id}
             renderItem={renderDietitianItem}
             contentContainerStyle={styles.listContainer}
+            ListHeaderComponent={
+              userDietitianChats.length > 0 ? (
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={[styles.sectionTitle, { color: textColor }]}>Aktif Sohbetler</Text>
+                  {userDietitianChats.map((chat) => {
+                    const hasUnread = (chat.unread_count || 0) > 0;
+                    return (
+                      <TouchableOpacity
+                        key={chat.id}
+                        style={[styles.card, { backgroundColor: cardBg, borderColor: borderColor }]}
+                        onPress={() => router.push({ 
+                          pathname: '/chat' as any, 
+                          params: { 
+                            userId: chat.id, 
+                            username: `${chat.first_name} ${chat.last_name}`.trim(), 
+                            avatarUrl: chat.profile_picture 
+                          } 
+                        })}
+                      >
+                        <View style={styles.infoContainer}>
+                          <Image
+                            source={{ uri: chat.profile_picture || `https://ui-avatars.com/api/?name=${chat.first_name}+${chat.last_name}` }}
+                            style={styles.inboxAvatar}
+                          />
+                          <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Text style={[styles.name, { color: textColor }]}>{chat.first_name} {chat.last_name}</Text>
+                              <Text style={{ fontSize: 10, color: hasUnread ? '#25D366' : subTextColor }}>
+                                {chat.message_time && new Date(chat.message_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                              <Text numberOfLines={1} style={{ color: subTextColor, fontSize: 13, fontStyle: hasUnread ? 'italic' : 'normal', flex: 1, marginRight: 10 }}>
+                                {chat.last_message}
+                              </Text>
+                              {hasUnread && (
+                                <View style={{
+                                  backgroundColor: '#25D366',
+                                  borderRadius: 10,
+                                  minWidth: 20,
+                                  height: 20,
+                                  justifyContent: 'center',
+                                  alignItems: 'center',
+                                  paddingHorizontal: 5,
+                                }}>
+                                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>{chat.unread_count}</Text>
+                                </View>
+                              )}
+                            </View>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <Text style={[styles.sectionTitle, { color: textColor, marginTop: 10 }]}>Diyetisyenleri Keşfet</Text>
+                </View>
+              ) : null
+            }
             ListEmptyComponent={
               <Text style={[styles.emptyText, { color: subTextColor }]}>Diyetisyen bulunamadı.</Text>
             }
@@ -446,10 +635,10 @@ const styles = StyleSheet.create({
   },
   followButton: {
     backgroundColor: THEME_COLOR,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 18,
-    minWidth: 80,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    minWidth: 70,
     alignItems: 'center',
   },
   followingButton: {
@@ -460,7 +649,7 @@ const styles = StyleSheet.create({
   followButtonText: {
     color: '#fff',
     fontWeight: '600',
-    fontSize: 12,
+    fontSize: 11,
   },
   followingButtonText: {
     color: THEME_COLOR,
@@ -477,9 +666,14 @@ const styles = StyleSheet.create({
     gap: 10
   },
   messageBtn: {
-    padding: 8,
-    borderRadius: 20,
+    padding: 6,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 12,
   }
 });

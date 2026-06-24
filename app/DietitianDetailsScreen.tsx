@@ -3,7 +3,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
-import { supabase } from './services/supabaseConfig';
+import { supabase } from '../services/supabaseConfig';
 
 export default function DietitianDetailsScreen() {
   const { uid, email, username } = useLocalSearchParams<{ uid: string, email: string, username: string }>();
@@ -33,21 +33,46 @@ export default function DietitianDetailsScreen() {
 
     setLoading(true);
     try {
+      // 1. Diploma görselini Supabase Storage'a yükle
+      const response = await fetch(diplomaImage);
+      const blob = await response.blob();
+      const fileExt = diplomaImage.split('.').pop()?.split('?')[0] || 'jpg';
+      const fileName = `diploma_${uid}_${Date.now()}.${fileExt}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('dietitian-documents')
+        .upload(fileName, blob, { contentType: `image/${fileExt}` });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicData } = supabase.storage
+        .from('dietitian-documents')
+        .getPublicUrl(fileName);
+
+      const diplomaImageUrl = publicData?.publicUrl;
+
+      // 2. Diyetisyen kaydını oluştur (onay bekliyor)
       const { error } = await supabase
         .from('dietitians')
         .insert([{ 
           id: uid, 
           email: email,
-          username: username, // Register ekranından geldi
+          username: username,
           first_name: firstName,
           last_name: lastName,
           location: location,
           diploma_no: diplomaNo,
-          is_verified: false 
+          diploma_image_url: diplomaImageUrl,
+          is_verified: false,
+          approval_status: 'pending' // pending | approved | rejected
         }]);
 
       if (error) throw error;
-      Alert.alert("Başarılı", "Başvurunuz alındı.", [{ text: "Tamam", onPress: () => router.replace('/home') }]);
+      Alert.alert(
+        "Başvuru Alındı 🎉",
+        "Belgeleriniz incelemeye alındı. Admin onayından sonra diyetisyen hesabınız aktifleşecektir.",
+        [{ text: "Tamam", onPress: () => router.replace('/home' as any) }]
+      );
     } catch (error: any) {
       Alert.alert("Hata", error.message);
     } finally {

@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -9,6 +10,7 @@ import {
     Dimensions,
     SafeAreaView,
     ScrollView,
+    FlatList,
     StatusBar,
     StyleSheet,
     Switch,
@@ -17,10 +19,10 @@ import {
     TouchableWithoutFeedback,
     View,
 } from 'react-native';
-import { useAuth } from '../AuthContext';
-import { auth } from '../services/firebaseConfig';
-import { supabase } from '../services/supabaseConfig';
-import { useTheme } from '../ThemeContext';
+import { useAuth } from '../../context/AuthContext';
+import { auth } from '../../services/firebaseConfig';
+import { supabase } from '../../services/supabaseConfig';
+import { useTheme } from '../../context/ThemeContext';
 
 const { width } = Dimensions.get('window');
 const THEME_COLOR = '#800020';
@@ -47,9 +49,18 @@ export default function ProfileScreen() {
     const [postsData, setPostsData] = useState<any[]>([]);
     const [recipes, setRecipes] = useState<any[]>([]); // Renamed from savedPosts
     const [settingsVisible, setSettingsVisible] = useState(false);
-    const [settingsView, setSettingsView] = useState<'main' | 'privacy'>('main');
+    const [settingsView, setSettingsView] = useState<'main' | 'privacy' | 'general'>('main');
     const [isPrivate, setIsPrivate] = useState(false);
+    const [featuredBadges, setFeaturedBadges] = useState<string[]>([]);
     const slideAnim = React.useRef(new Animated.Value(width)).current;
+
+    const allBadges = [
+        { id: 'first_log', name: 'İlk Adım', icon: 'footsteps', color: '#4CAF50', desc: 'İlk besin kaydını tamamladın!' },
+        { id: 'water_master', name: 'Su Ejderhası', icon: 'water', color: '#2196F3', desc: 'Günlük su hedefini 2L üzerine çıkardın.' },
+        { id: 'streak_3', name: '3 Günlük Seri', icon: 'flame', color: '#FF5722', desc: 'Üst üste 3 gün kayıt yaparak kazanılır.' },
+        { id: 'early_bird', name: 'Erkenci Kuş', icon: 'sunny', color: '#FFC107', desc: 'Sabah 09:00 öncesi kahvaltı kaydı yaparak kazanılır.' },
+        { id: 'macro_hero', name: 'Makro Kahramanı', icon: 'medal', color: '#9C27B0', desc: 'Tüm makro hedeflerine tam isabet tutturunca kazanılır.' }
+    ];
 
     const openSettings = () => {
         setSettingsVisible(true);
@@ -78,12 +89,9 @@ export default function ProfileScreen() {
             const url = contextUser?.avatar_url || (profile?.role === 'dietitian' ? profile?.profile_picture : profile?.avatar_url);
 
             if (!url) {
-                const nameForAvatar = contextUser?.ad || profile?.ad || profile?.first_name;
-                if (nameForAvatar) {
-                    setImageSource(`https://ui-avatars.com/api/?name=${nameForAvatar}&background=800020&color=fff`);
-                } else {
-                    setImageSource(null);
-                }
+                // Daha güçlü bir isim belirleme mantığı (fallback zinciri)
+                const nameForAvatar = contextUser?.ad || profile?.ad || profile?.first_name || contextUser?.username || profile?.username || 'User';
+                setImageSource(`https://ui-avatars.com/api/?name=${encodeURIComponent(nameForAvatar)}&background=800020&color=fff&size=256`);
                 return;
             }
 
@@ -115,6 +123,7 @@ export default function ProfileScreen() {
                 }
 
                 // Fallback
+                console.log("Using Fallback/Original URL:", url);
                 setImageSource(url);
 
             } catch (e) {
@@ -127,24 +136,33 @@ export default function ProfileScreen() {
             setIsPrivate(profile.is_private || false);
             fetchImage();
         }
-    }, [profile]);
+    }, [profile, contextUser?.avatar_url]);
 
 
     useFocusEffect(
         useCallback(() => {
-            fetchProfile();
             if (contextUser?.id) {
-                fetchStats(contextUser.id);
-                fetchPosts(contextUser.id);
+                // Her şeyi paralel başlat
+                Promise.all([
+                    fetchProfile(),
+                    fetchStats(contextUser.id),
+                    fetchPosts(contextUser.id),
+                    fetchRecipes(contextUser.id),
+                    loadFeaturedBadges(contextUser.id)
+                ]);
+            } else {
+                fetchProfile();
             }
         }, [contextUser?.id])
     );
 
-    useEffect(() => {
-        if (contextUser?.id) {
-            fetchStats(contextUser.id);
-        }
-    }, [contextUser?.id]);
+    const loadFeaturedBadges = async (uid: string) => {
+        try {
+            const stored = await AsyncStorage.getItem(`featuredBadges_${uid}`);
+            if (stored) setFeaturedBadges(JSON.parse(stored));
+            else setFeaturedBadges([]);
+        } catch (e) { console.error(e); }
+    };
 
     const fetchPosts = async (uid: string) => {
         try {
@@ -152,14 +170,12 @@ export default function ProfileScreen() {
                 .from('posts')
                 .select('*')
                 .eq('user_id', uid)
-                .eq('is_recipe', false) // Sadece normal postları getir
+                .eq('is_recipe', false)
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
-
             if (data) {
                 setPostsData(data);
-                // İstatistiklerdeki post sayısını güncelle
                 setStats(prev => ({ ...prev, posts: data.length }));
             }
         } catch (error) {
@@ -177,65 +193,30 @@ export default function ProfileScreen() {
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
-
-            if (data) {
-                setRecipes(data);
-            }
+            if (data) setRecipes(data);
         } catch (error) {
             console.log("Tarifleri çekme hatası:", error);
         }
     };
 
-    useEffect(() => {
-        if (activeTab === 1 && contextUser?.id) {
-            fetchRecipes(contextUser.id);
-        }
-    }, [activeTab, contextUser?.id]);
-
     const fetchStats = async (uid: string) => {
         try {
-            // 1. Takipçi sayısını hesapla (Beni takip edenler)
-            const { count: followerCountDb, error: followerError } = await supabase
-                .from('user_follows')
-                .select('id', { count: 'exact', head: true })
-                .eq('following_id', uid)
-                .eq('status', 'accepted');
+            // Tüm istatistikleri paralel çek
+            const [followersRes, followingRes, dietFollowRes, dietAsFollowerRes] = await Promise.all([
+                supabase.from('user_follows').select('id', { count: 'exact', head: true }).eq('following_id', uid).eq('status', 'accepted'),
+                supabase.from('user_follows').select('id', { count: 'exact', head: true }).eq('follower_id', uid).eq('status', 'accepted'),
+                supabase.from('dietitian_follows').select('id', { count: 'exact', head: true }).eq('follower_id', uid),
+                supabase.from('dietitian_follows').select('id', { count: 'exact', head: true }).eq('dietitian_id', uid)
+            ]);
 
-            // 1.5 Takip edilen sayısını hesapla (Benim takip ettiklerim)
-            const { count: followingCountDb, error: followingError } = await supabase
-                .from('user_follows')
-                .select('id', { count: 'exact', head: true })
-                .eq('follower_id', uid)
-                .eq('status', 'accepted');
-
-            // 2. Takip edilen diyetisyen sayısını hesapla
-            const { count: followingDietitianCount, error: dietError } = await supabase
-                .from('dietitian_follows')
-                .select('id', { count: 'exact', head: true })
-                .eq('follower_id', uid);
-
-            // 3. (Eğer Diyetisyense) Takipçi sayısını hesapla
-            let followerCount = followerCountDb || 0;
-
-            // Eğer profil diyetisyense, onu takip edenleri ekle
-            const { count: dietFollowers, error: dfError } = await supabase
-                .from('dietitian_follows')
-                .select('id', { count: 'exact', head: true })
-                .eq('dietitian_id', uid);
-
-            if (dietFollowers) {
-                followerCount += dietFollowers;
-            }
-
-            if (followerError || followingError) console.log("Takip istatistik hatası", followerError, followingError);
-            if (dietError) console.log("Diyetisyen takip istatistik hatası:", dietError);
+            const followerCount = (followersRes.count || 0) + (dietAsFollowerRes.count || 0);
+            const followingCount = (followingRes.count || 0) + (dietFollowRes.count || 0);
 
             setStats(prev => ({
                 ...prev,
                 followers: followerCount,
-                following: (followingCountDb || 0) + (followingDietitianCount || 0)
+                following: followingCount
             }));
-
         } catch (err) {
             console.log("Stats fetch error:", err);
         }
@@ -250,29 +231,32 @@ export default function ProfileScreen() {
                 return;
             }
 
-            // 1. Try fetching as dietitian
-            const { data: dietitian } = await supabase
-                .from('dietitians')
-                .select('*')
-                .eq('id', user.uid)
-                .single();
+            // Diyetisyen ve normal profil kontrolünü paralel yap
+            const [dietitianRes, profileRes] = await Promise.all([
+                supabase.from('dietitians').select('*').eq('id', user.uid).single(),
+                supabase.from('profiles').select('*').eq('id', user.uid).single()
+            ]);
 
-            if (dietitian) {
-                setProfile({ ...dietitian, role: 'dietitian' });
-            } else {
-                // 2. Fallback to regular profile
-                const { data: userData } = await supabase
-                    .from('profiles')
-                    .select('*')
-                    .eq('id', user.uid)
-                    .single();
+            if (dietitianRes.data) {
+                // Puanlama verilerini çek
+                const { data: ratingsData } = await supabase
+                    .from('dietitian_ratings')
+                    .select('rating')
+                    .eq('dietitian_id', user.uid);
+                
+                const count = ratingsData?.length || 0;
+                const avg = count > 0 
+                    ? (ratingsData!.reduce((sum, r) => sum + r.rating, 0) / count).toFixed(1) 
+                    : '5.0';
 
-                console.log("Fetched User Profile:", userData); // DEBUG LOG
-                console.log("Avatar URL in DB:", userData?.avatar_url); // DEBUG LOG
-
-                if (userData) {
-                    setProfile({ ...userData, role: 'user' });
-                }
+                setProfile({ 
+                    ...dietitianRes.data, 
+                    role: 'dietitian',
+                    rating_avg: avg,
+                    rating_count: count
+                });
+            } else if (profileRes.data) {
+                setProfile({ ...profileRes.data, role: 'user' });
             }
         } catch (error) {
             console.log("Profil çekme hatası:", error);
@@ -331,7 +315,7 @@ export default function ProfileScreen() {
         if (type === 'dietitian') {
             closeSettings();
             Alert.alert("Bilgi", "Diyetisyen hesabına geçişte diploma ve sertifika bilgilerinizi doğrulamanız gerekmektedir.", [
-                { text: "Devam Et", onPress: () => router.push({ pathname: '/DietitianDetailsScreen', params: { uid: contextUser.id } }) },
+                { text: "Devam Et", onPress: () => router.push({ pathname: '/DietitianDetailsScreen' as any, params: { uid: contextUser.id } }) },
                 { text: "Vazgeç", style: "cancel" }
             ]);
             return;
@@ -340,7 +324,7 @@ export default function ProfileScreen() {
         if (type === 'business') {
             closeSettings();
             Alert.alert("İşletme Hesabına Geçiş", "İşletme sayfasına geçebilmek için lütfen işletme iletişim ve adres bilgilerinizi tanımlayın.", [
-                { text: "Devam Et", onPress: () => router.push({ pathname: '/edit-profile', params: { intent: 'become_business' } }) },
+                { text: "Devam Et", onPress: () => router.push({ pathname: '/edit-profile' as any, params: { intent: 'become_business' } }) },
                 { text: "Vazgeç", style: "cancel" }
             ]);
             return;
@@ -367,36 +351,6 @@ export default function ProfileScreen() {
         }
     };
 
-    const renderPostsGrid = () => {
-        if (postsData.length === 0) {
-            return (
-                <View style={styles.emptyContainer}>
-                    <Ionicons name="images-outline" size={40} color="#ccc" />
-                    <Text style={styles.emptyText}>Henüz bir gönderi yok.</Text>
-                </View>
-            );
-        }
-
-        return (
-            <View style={styles.postsGrid}>
-                {postsData.map((post) => (
-                    <TouchableOpacity
-                        key={post.id}
-                        style={styles.gridItem}
-                        onPress={() => router.push({ pathname: '/post-detail', params: { postId: post.id } })}
-                    >
-                        <Image
-                            source={{ uri: post.image_url }}
-                            style={styles.gridImage}
-                            contentFit="cover"
-                            transition={200}
-                        />
-                    </TouchableOpacity>
-                ))}
-            </View>
-        );
-    };
-
     if (loading && !contextUser) {
         return (
             <View style={[styles.container, styles.centerContent]}>
@@ -405,28 +359,15 @@ export default function ProfileScreen() {
         );
     }
 
-    return (
-        <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
-            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-
-            <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor }]}>
-                <Text style={[styles.headerUsername, { color: textColor }]}>
-                    {contextUser?.username
-                        ? `@${contextUser.username}`
-                        : (profile?.username ? `@${profile.username}` : 'Profil')}
-                </Text>
-                <TouchableOpacity onPress={openSettings}>
-                    <Ionicons name="menu-outline" size={30} color={THEME_COLOR} />
-                </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} style={{ backgroundColor: bgColor }}>
-                <View style={styles.profileInfoContainer}>
+    const renderHeader = () => (
+        <View style={{ backgroundColor: bgColor }}>
+            <View style={styles.profileInfoContainer}>
                     <Image
                         source={imageSource}
                         style={[styles.avatar, { backgroundColor: borderColor }]}
                         contentFit="cover"
                         transition={500}
+                        onError={(e) => console.log("Profile Image Load Error:", e)}
                     />
 
                     <View style={styles.statsContainer}>
@@ -435,14 +376,12 @@ export default function ProfileScreen() {
                             <Text style={[styles.statLabel, { color: subTextColor }]}>Gönderi</Text>
                         </View>
 
-                        <TouchableOpacity style={styles.statItem} onPress={() => router.push({ pathname: '/follow-list', params: { type: 'followers', userId: contextUser?.id } })}>
-                            <Text style={[styles.statNumber, { color: textColor }]}>
-                                {profile?.role === 'dietitian' ? profile?.rating_avg : stats.followers}
-                            </Text>
-                            <Text style={[styles.statLabel, { color: subTextColor }]}>{profile?.role === 'dietitian' ? 'Puan' : 'Takipçi'}</Text>
+                        <TouchableOpacity style={styles.statItem} onPress={() => contextUser?.id && router.push({ pathname: '/follow-list' as any, params: { type: 'followers', userId: contextUser.id } })}>
+                            <Text style={[styles.statNumber, { color: textColor }]}>{stats.followers}</Text>
+                            <Text style={[styles.statLabel, { color: subTextColor }]}>Takipçi</Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity style={styles.statItem} onPress={() => router.push({ pathname: '/follow-list', params: { type: 'following', userId: contextUser?.id } })}>
+                        <TouchableOpacity style={styles.statItem} onPress={() => contextUser?.id && router.push({ pathname: '/follow-list' as any, params: { type: 'following', userId: contextUser.id } })}>
                             <Text style={[styles.statNumber, { color: textColor }]}>{stats.following}</Text>
                             <Text style={[styles.statLabel, { color: subTextColor }]}>Takip</Text>
                         </TouchableOpacity>
@@ -457,8 +396,15 @@ export default function ProfileScreen() {
 
                     {profile?.role === 'dietitian' ? (
                         <View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 193, 7, 0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                                    <Ionicons name="star" size={14} color="#FFC107" />
+                                    <Text style={{ marginLeft: 4, fontSize: 13, fontWeight: 'bold', color: '#FFC107' }}>
+                                        {profile?.rating_avg || '5.0'} ({profile?.rating_count || 0} değerlendirme)
+                                    </Text>
+                                </View>
+                            </View>
                             <Text style={[styles.bioText, { color: subTextColor }]}>📍 {profile?.location}</Text>
-                            <Text style={[styles.bioText, { color: subTextColor }]}>📜 Diploma No: {profile?.diploma_no}</Text>
 
                             {!profile?.is_verified && (
                                 <View style={[styles.pendingBadge, { backgroundColor: isDark ? '#332b00' : '#fff3cd', borderColor: isDark ? '#665c00' : '#ffeeba' }]}>
@@ -468,7 +414,39 @@ export default function ProfileScreen() {
                             )}
                         </View>
                     ) : (
-                        <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.bio || 'Sağlıklı yaşam için Foodap kullanıyor. 🥑'}</Text>
+                        <View>
+                            <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.bio || 'Sağlıklı yaşam için Foodap kullanıyor. 🥑'}</Text>
+                            
+                            {/* ROZETLER / BAŞARILAR VİTRİNİ */}
+                            {featuredBadges.length > 0 ? (
+                                <View style={styles.badgesContainer}>
+                                    <Text style={[styles.sectionTitle, { color: textColor }]}>Öne Çıkan Başarılar</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.badgesScroll}>
+                                        {allBadges.filter(b => featuredBadges.includes(b.id)).map((badge) => (
+                                            <TouchableOpacity 
+                                                key={badge.id} 
+                                                style={styles.badgeItem}
+                                                onPress={() => Alert.alert(badge.name, badge.desc)}
+                                            >
+                                                <View style={[styles.badgeIconBg, { backgroundColor: badge.color + '20' }]}>
+                                                    <Ionicons name={badge.icon as any} size={24} color={badge.color} />
+                                                </View>
+                                                <Text style={[styles.badgeLabel, { color: subTextColor }]}>{badge.name}</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+                                </View>
+                            ) : (
+                                <TouchableOpacity 
+                                    style={[styles.badgesContainer, { alignItems: 'center', paddingVertical: 10 }]}
+                                    onPress={() => router.push('/tracking' as any)}
+                                >
+                                    <Text style={{ color: subTextColor, fontSize: 12, fontStyle: 'italic' }}>
+                                        Henüz bir başarı sergilemedin. Takip sayfasından ekleyebilirsin.
+                                    </Text>
+                                </TouchableOpacity>
+                            )}
+                        </View>
                     )}
                 </View>
 
@@ -478,7 +456,7 @@ export default function ProfileScreen() {
                             <Ionicons name="location-outline" size={18} color={THEME_COLOR} />
                             <Text style={[styles.businessButtonText, { color: textColor }]}>Yol Tarifi (Önizleme)</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => router.push('/edit-profile')}>
+                        <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => router.push('/edit-profile' as any)}>
                             <Ionicons name="restaurant-outline" size={18} color={THEME_COLOR} />
                             <Text style={[styles.businessButtonText, { color: textColor }]}>Menüyü Düzenle</Text>
                         </TouchableOpacity>
@@ -487,7 +465,7 @@ export default function ProfileScreen() {
 
                 {/* BUTONLAR */}
                 <View style={styles.actionButtons}>
-                    <TouchableOpacity style={[styles.editButton, { backgroundColor: borderColor }]} onPress={() => router.push('/edit-profile')}>
+                    <TouchableOpacity style={[styles.editButton, { backgroundColor: borderColor }]} onPress={() => router.push('/edit-profile' as any)}>
                         <Text style={[styles.buttonText, { color: textColor }]}>Profili Düzenle</Text>
                     </TouchableOpacity>
                 </View>
@@ -507,39 +485,76 @@ export default function ProfileScreen() {
                         <Ionicons name="restaurant-outline" size={26} color={activeTab === 1 ? THEME_COLOR : subTextColor} />
                     </TouchableOpacity>
                 </View>
+        </View>
+    );
 
-                {/* POST CONTENT */}
-                {activeTab === 0 ? (
-                    renderPostsGrid()
-                ) : (
-                    recipes.length === 0 ? (
-                        <View style={styles.emptyContainer}>
-                            <Ionicons name="restaurant-outline" size={40} color="#ccc" />
-                            <Text style={[styles.emptyText, { color: subTextColor }]}>Henüz tarif yok.</Text>
-                        </View>
-                    ) : (
-                        <View style={styles.postsGrid}>
-                            {recipes.map((item) => (
-                                <TouchableOpacity
-                                    key={item.id}
-                                    style={styles.gridItem}
-                                    onPress={() => router.push({ pathname: '/recipe-detail', params: { recipeId: item.id } })}
-                                >
-                                    <Image
-                                        source={{ uri: item.image_url }}
-                                        style={styles.gridImage}
-                                        contentFit="cover"
-                                        transition={200}
-                                    />
-                                    <View style={{ position: 'absolute', bottom: 5, left: 5, backgroundColor: 'rgba(0,0,0,0.5)', padding: 2, borderRadius: 4 }}>
-                                        <Text style={{ color: 'white', fontSize: 10 }}>{item.calories} kcal</Text>
-                                    </View>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-                    )
-                )}
-            </ScrollView>
+    const renderGridItem = ({ item }: { item: any }) => (
+        <TouchableOpacity
+            style={styles.gridItem}
+            onPress={() => router.push({ 
+                pathname: (activeTab === 0 ? '/post-detail' : '/recipe-detail') as any, 
+                params: activeTab === 0 
+                    ? { postId: item.id, filterUserId: contextUser?.id } 
+                    : { recipeId: item.id, filterUserId: contextUser?.id } 
+            })}
+        >
+            <Image
+                source={{ uri: item.image_url?.split(',')[0] }}
+                style={styles.gridImage}
+                contentFit="cover"
+                transition={200}
+            />
+            {activeTab === 1 && (
+                <View style={styles.recipeIndicator}>
+                    <Ionicons name="restaurant" size={16} color="#fff" />
+                </View>
+            )}
+            {activeTab === 1 && (
+                <View style={{ position: 'absolute', bottom: 5, left: 5, backgroundColor: 'rgba(0,0,0,0.5)', padding: 2, borderRadius: 4 }}>
+                    <Text style={{ color: 'white', fontSize: 10 }}>{item.calories} kcal</Text>
+                </View>
+            )}
+        </TouchableOpacity>
+    );
+
+    const listData = activeTab === 0 ? postsData : recipes;
+    
+    return (
+        <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
+            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+
+            <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor }]}>
+                <Text style={[styles.headerUsername, { color: textColor }]}>
+                    {contextUser?.username
+                        ? `@${contextUser.username}`
+                        : (profile?.username ? `@${profile.username}` : 'Profil')}
+                </Text>
+                <TouchableOpacity onPress={openSettings}>
+                    <Ionicons name="menu-outline" size={30} color={THEME_COLOR} />
+                </TouchableOpacity>
+            </View>
+
+            <FlatList
+                data={listData}
+                keyExtractor={(item) => item.id}
+                renderItem={renderGridItem}
+                ListHeaderComponent={renderHeader}
+                numColumns={3}
+                key={activeTab === 0 ? 'posts' : 'recipes'} // Sütun hatalarını önlemek için key değiştiriyoruz
+                showsVerticalScrollIndicator={false}
+                initialNumToRender={12}
+                maxToRenderPerBatch={12}
+                windowSize={5}
+                removeClippedSubviews={true}
+                ListEmptyComponent={
+                    <View style={styles.emptyContainer}>
+                        <Ionicons name={activeTab === 0 ? "images-outline" : "restaurant-outline"} size={40} color="#ccc" />
+                        <Text style={[styles.emptyText, { color: subTextColor }]}>
+                            {activeTab === 0 ? "Henüz bir gönderi yok." : "Henüz tarif yok."}
+                        </Text>
+                    </View>
+                }
+            />
 
             {settingsVisible && (
                 <TouchableWithoutFeedback onPress={closeSettings}>
@@ -600,7 +615,21 @@ export default function ProfileScreen() {
                                     style={[styles.modalOption, { borderBottomColor: borderColor }]}
                                     onPress={() => {
                                         closeSettings();
-                                        router.push('/activity-log');
+                                        router.push('/promote-post' as any);
+                                    }}
+                                >
+                                    <View style={styles.optionLeft}>
+                                        <Ionicons name="megaphone-outline" size={22} color={textColor} />
+                                        <Text style={[styles.optionText, { color: textColor }]}>Reklam ve Tanıtım</Text>
+                                    </View>
+                                    <Ionicons name="chevron-forward" size={20} color={subTextColor} />
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={[styles.modalOption, { borderBottomColor: borderColor }]}
+                                    onPress={() => {
+                                        closeSettings();
+                                        router.push('/activity-log' as any);
                                     }}
                                 >
                                     <View style={styles.optionLeft}>
@@ -612,9 +641,7 @@ export default function ProfileScreen() {
 
                                 <TouchableOpacity
                                     style={[styles.modalOption, { borderBottomColor: borderColor }]}
-                                    onPress={() => {
-                                        closeSettings();
-                                    }}
+                                    onPress={() => setSettingsView('general')}
                                 >
                                     <View style={styles.optionLeft}>
                                         <Ionicons name="settings-outline" size={22} color={textColor} />
@@ -658,7 +685,7 @@ export default function ProfileScreen() {
                                     </View>
                                 </TouchableOpacity>
                             </>
-                        ) : (
+                        ) : settingsView === 'privacy' ? (
                             <>
                                 <View style={[styles.modalHeader, { borderBottomColor: borderColor }]}>
                                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -688,6 +715,70 @@ export default function ProfileScreen() {
                                         value={isPrivate}
                                         style={{ transform: [{ scaleX: 1 }, { scaleY: 1 }] }}
                                     />
+                                </View>
+                            </>
+                        ) : (
+                            <>
+                                <View style={[styles.modalHeader, { borderBottomColor: borderColor }]}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <TouchableOpacity onPress={() => setSettingsView('main')} style={{ marginRight: 10 }}>
+                                            <Ionicons name="arrow-back" size={24} color={textColor} />
+                                        </TouchableOpacity>
+                                        <Text style={[styles.modalTitle, { color: textColor }]}>Genel Ayarlar</Text>
+                                    </View>
+                                    <TouchableOpacity onPress={closeSettings}>
+                                        <Ionicons name="close-circle-outline" size={26} color={textColor} />
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={{ padding: 20 }}>
+                                    <TouchableOpacity
+                                        style={[styles.modalOption, { borderBottomColor: borderColor }]}
+                                        onPress={() => {
+                                            closeSettings();
+                                            router.push('/edit-profile' as any);
+                                        }}
+                                    >
+                                        <View style={styles.optionLeft}>
+                                            <Ionicons name="person-outline" size={22} color={textColor} />
+                                            <Text style={[styles.optionText, { color: textColor }]}>Profili Düzenle</Text>
+                                        </View>
+                                        <Ionicons name="chevron-forward" size={20} color={subTextColor} />
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={[styles.modalOption, { borderBottomColor: borderColor }]}
+                                        onPress={() => {
+                                            closeSettings();
+                                            router.push('/forgot-password' as any);
+                                        }}
+                                    >
+                                        <View style={styles.optionLeft}>
+                                            <Ionicons name="key-outline" size={22} color={textColor} />
+                                            <Text style={[styles.optionText, { color: textColor }]}>Şifre Değiştir</Text>
+                                        </View>
+                                        <Ionicons name="chevron-forward" size={20} color={subTextColor} />
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={[styles.modalOption, { borderBottomColor: borderColor }]}
+                                        onPress={() => Alert.alert("Bilgi", "FoodApp v1.0.4\nSağlıklı yaşam asistanınız.")}
+                                    >
+                                        <View style={styles.optionLeft}>
+                                            <Ionicons name="information-circle-outline" size={22} color={textColor} />
+                                            <Text style={[styles.optionText, { color: textColor }]}>Uygulama Hakkında</Text>
+                                        </View>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.modalOption}
+                                        onPress={() => Alert.alert("Yardım", "Destek için support@foodapp.com adresine mail atabilirsiniz.")}
+                                    >
+                                        <View style={styles.optionLeft}>
+                                            <Ionicons name="help-circle-outline" size={22} color={textColor} />
+                                            <Text style={[styles.optionText, { color: textColor }]}>Yardım ve Destek</Text>
+                                        </View>
+                                    </TouchableOpacity>
                                 </View>
                             </>
                         )}
@@ -837,6 +928,52 @@ const styles = StyleSheet.create({
         color: '#666',
         lineHeight: 18,
         paddingRight: 10,
+    },
+    // Badge Styles
+    badgesContainer: {
+        marginTop: 15,
+        paddingTop: 15,
+        borderTopWidth: 0.5,
+        borderTopColor: '#f0f0f0',
+    },
+    sectionTitle: {
+        fontSize: 14,
+        fontWeight: 'bold',
+        marginBottom: 10,
+    },
+    badgesScroll: {
+        flexDirection: 'row',
+    },
+    badgeItem: {
+        alignItems: 'center',
+        marginRight: 20,
+        width: 70,
+    },
+    badgeIconBg: {
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 6,
+    },
+    placeholderContainerSmall: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    recipeIndicator: {
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        padding: 4,
+        borderRadius: 4,
+    },
+    badgeLabel: {
+        fontSize: 10,
+        fontWeight: '600',
+        textAlign: 'center',
     },
 });
 

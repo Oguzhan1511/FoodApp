@@ -15,9 +15,9 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { auth } from './services/firebaseConfig';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { auth } from '../services/firebaseConfig';
+import { supabase } from '../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
@@ -110,7 +110,7 @@ export default function OnboardingScreen() {
 
       if (!currentUser) {
         Alert.alert("Hata", "Oturum bulunamadı, lütfen tekrar giriş yapın.");
-        router.replace('/login');
+        router.replace('/login' as any);
         return;
       }
 
@@ -147,7 +147,7 @@ export default function OnboardingScreen() {
       });
 
       Alert.alert("Harika!", "Profilin başarıyla oluşturuldu.", [
-        { text: "Uygulamaya Başla", onPress: () => router.replace('/(tabs)/home') }
+        { text: "Uygulamaya Başla", onPress: () => router.replace('/(tabs)/home' as any) }
       ]);
 
     } catch (error: any) {

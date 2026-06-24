@@ -14,12 +14,16 @@ import {
     TextInput,
     TouchableOpacity,
     UIManager,
-    View
+    View,
+    Dimensions,
+    Alert
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 import LikesBottomSheet from '../components/LikesBottomSheet';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -269,24 +273,89 @@ export default function RecipeDetailScreen() {
 
             <ScrollView contentContainerStyle={styles.scrollContent}>
                 {/* USER HEADER */}
-                <TouchableOpacity
-                    style={styles.userHeader}
-                    onPress={() => router.push({ pathname: '/user-profile', params: { userId: post.user_id } })}
-                >
-                    <Image
-                        source={{ uri: postOwner?.avatar_url || `https://ui-avatars.com/api/?name=${postOwner?.username || 'U'}&background=800020&color=fff` }}
-                        style={styles.avatarSymbol}
-                        contentFit="cover"
-                    />
-                    <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
-                </TouchableOpacity>
+                <View style={[styles.userHeader, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+                    <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center' }}
+                        onPress={() => router.push({ pathname: '/user-profile' as any, params: { userId: post.user_id } })}
+                    >
+                        <Image
+                            source={{ uri: postOwner?.avatar_url || `https://ui-avatars.com/api/?name=${postOwner?.username || 'U'}&background=800020&color=fff` }}
+                            style={styles.avatarSymbol}
+                            contentFit="cover"
+                        />
+                        <Text style={[styles.username, { color: textColor }]}>{postOwner?.username ? postOwner.username.replace(/^@/, '') : 'Kullanıcı'}</Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                        onPress={() => {
+                            if (post.user_id === user?.id) {
+                                Alert.alert(
+                                    "Seçenekler",
+                                    "Bu tarif için ne yapmak istersiniz?",
+                                    [
+                                        { text: "Vazgeç", style: "cancel" },
+                                        { text: "Tarifi Sil", style: "destructive", onPress: async () => {
+                                            try {
+                                                const { error } = await supabase.from('posts').delete().eq('id', post.id);
+                                                if (error) throw error;
+                                                router.back();
+                                            } catch (e) {
+                                                Alert.alert('Hata', 'Silinemedi.');
+                                            }
+                                        }}
+                                    ]
+                                );
+                            } else {
+                                Alert.alert("Seçenekler", "Bu tarifi şikayet etmek ister misiniz?", [
+                                    { text: "Vazgeç", style: "cancel" },
+                                    { text: "Şikayet Et", onPress: () => Alert.alert("Teşekkürler", "Şikayetiniz alındı.") }
+                                ]);
+                            }
+                        }}
+                    >
+                        <Ionicons name="ellipsis-horizontal" size={24} color={textColor} />
+                    </TouchableOpacity>
+                </View>
 
                 {/* POST IMAGE */}
-                <Image
-                    source={{ uri: post.image_url }}
-                    style={styles.postImage}
-                    contentFit="cover"
-                />
+                <View>
+                    {post.image_url && post.image_url.includes(',') ? (
+                        <ScrollView 
+                            horizontal 
+                            pagingEnabled 
+                            showsHorizontalScrollIndicator={false}
+                        >
+                            {post.image_url.split(',').map((uri: string, index: number) => (
+                                <View key={index} style={{ width: SCREEN_WIDTH }}>
+                                    <Image
+                                        source={{ uri }}
+                                        style={styles.postImage}
+                                        contentFit="cover"
+                                    />
+                                    <View style={{
+                                        position: 'absolute',
+                                        top: 10,
+                                        right: 10,
+                                        backgroundColor: 'rgba(0,0,0,0.6)',
+                                        paddingHorizontal: 8,
+                                        paddingVertical: 4,
+                                        borderRadius: 12,
+                                    }}>
+                                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>
+                                            {index + 1}/{post.image_url.split(',').length}
+                                        </Text>
+                                    </View>
+                                </View>
+                            ))}
+                        </ScrollView>
+                    ) : (
+                        <Image
+                            source={{ uri: post.image_url }}
+                            style={styles.postImage}
+                            contentFit="cover"
+                        />
+                    )}
+                </View>
 
                 {/* ACTIONS */}
                 <View style={styles.actions}>

@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { Dimensions, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useTheme } from './ThemeContext';
+import { useTheme } from '../context/ThemeContext';
 
 const { height } = Dimensions.get('window');
 
@@ -32,7 +32,7 @@ export default function WelcomeScreen() {
         <View style={styles.footer}>
           <TouchableOpacity
             style={[styles.button, styles.primaryButton, !isDark && styles.shadow]}
-            onPress={() => router.push('/login')}
+            onPress={() => router.push('/login' as any)}
             activeOpacity={0.8}
           >
             <Text style={styles.primaryButtonText}>Giriş Yap</Text>
@@ -40,7 +40,7 @@ export default function WelcomeScreen() {
 
           <TouchableOpacity
             style={[styles.button, styles.secondaryButton, { borderColor: isDark ? '#333' : '#E0E0E0' }]}
-            onPress={() => router.push('/register')}
+            onPress={() => router.push('/register' as any)}
             activeOpacity={0.8}
           >
             <Text style={[styles.secondaryButtonText, { color: isDark ? '#FFFFFF' : '#333' }]}>Kayıt Ol</Text>

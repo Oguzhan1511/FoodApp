@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
+import aiAvatar from '../assets/ai_avatar.jpg';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
@@ -12,6 +13,7 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,9 +21,11 @@ import {
   View,
 } from 'react-native';
 
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
+import { scraperService } from '../services/scraperService'; // AI yerine Scraper Bot eklendi
+
 
 const THEME_COLOR = '#800020';
 
@@ -89,7 +93,7 @@ const SharedPostBubble = ({ postId, isMe, router }: any) => {
     <View style={{ marginTop: 4 }}>
       <TouchableOpacity
         style={{ borderRadius: 12, alignItems: 'flex-start' }}
-        onPress={() => router.push({ pathname: '/post-detail', params: { postId } })}
+        onPress={() => router.push({ pathname: '/post-detail' as any, params: { postId } })}
         activeOpacity={0.8}
       >
         {postOwnerUsername && (
@@ -155,9 +159,12 @@ export default function ChatScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [chatColor, setChatColor] = useState(THEME_COLOR);
+  const [isTyping, setIsTyping] = useState(false); // Yazıyor... göstergesi
+  const isAI = userId === 'FOOD_AI'; // AI Kontrolü
   const commonEmojis = ['❤️', '😂', '😮', '😢', '🙏', '👍'];
 
   const flatListRef = useRef<FlatList>(null);
+
 
   useEffect(() => {
     checkUserRole();
@@ -225,7 +232,7 @@ export default function ChatScreen() {
       processingPlanRef.current = true;
       const content = `DIET_PLAN:::${dietPlanData}`;
       sendMessage(content);
-      router.setParams({ dietPlanData: null });
+      (router as any).setParams({ dietPlanData: null });
     } else {
       processingPlanRef.current = false;
     }
@@ -243,55 +250,87 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!user) return;
-    if (!userId && !groupId) return;
+    if (!userId && !groupId) {
+      setLoading(false);
+      return;
+    }
 
     fetchMessages();
     fetchReactions();
 
-    const channel = supabase.channel('chat_updates')
+    const chatKey = groupId ? `grp_${groupId}` : `priv_${userId}`;
+    const channelName = `chat_${chatKey}_${user.id.substring(0, 8)}`;
+
+    const channel = supabase.channel(channelName);
+
+    channel
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*', // INSERT ve UPDATE'i kapsar
           schema: 'public',
           table: 'messages',
-          filter: groupId ? `group_id=eq.${groupId}` : undefined
         },
         (payload) => {
-          const newMsg = payload.new as Message;
-          if (newMsg.sender_id === user.id) return;
-          if (!groupId) {
-            if ((newMsg.sender_id === userId && newMsg.receiver_id === user.id) || (newMsg.sender_id === user.id && newMsg.receiver_id === userId)) {
-              setMessages(prev => [...prev, newMsg]);
-              if (newMsg.sender_id === userId) markAsRead();
+          if (payload.eventType === 'INSERT') {
+            const newMsg = payload.new as Message;
+            if (newMsg.sender_id === user.id) return;
+
+            if (groupId) {
+              if (newMsg.group_id === groupId) {
+                setMessages(prev => {
+                  if (prev.some(m => m.id === newMsg.id)) return prev;
+                  return [...prev, newMsg];
+                });
+              }
+            } else {
+              const isRelated = (newMsg.sender_id === userId && newMsg.receiver_id === user.id) || 
+                                (newMsg.sender_id === user.id && newMsg.receiver_id === userId);
+              
+              if (isRelated) {
+                setMessages(prev => {
+                  if (prev.some(m => m.id === newMsg.id)) return prev;
+                  return [...prev, newMsg];
+                });
+                if (newMsg.sender_id === userId) markAsRead();
+              }
             }
-          } else if (newMsg.group_id === groupId) {
-            setMessages(prev => prev.some(m => m.id === newMsg.id) ? prev : [...prev, newMsg]);
+          } else if (payload.eventType === 'UPDATE') {
+            // Okundu bilgisi güncellendiyse (Karşı taraf okuduysa)
+            const updatedMsg = payload.new as Message;
+            setMessages(prev => prev.map(m => m.id === updatedMsg.id ? updatedMsg : m));
           }
         }
       )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'message_reactions' },
-        () => {
-          fetchReactions();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log(`✅ Chat Subscribed: ${channelName}`);
         }
-      )
-      .subscribe();
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`⚠️ Chat Sub Error (${status}). Retrying in 2s...`);
+          setTimeout(() => fetchMessages(), 2000);
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, userId, groupId]);
+  }, [user?.id, userId, groupId]);
 
   const fetchReactions = async () => {
     if (!user) return;
     try {
-      // Get all reactions for current chat's messages
-      // For simplicity, we fetch all reactions related to these messages
+      // Sadece mevcut sohbetin mesajlarına ait reaksiyonları çek
+      const messageIds = messages.map(m => m.id).filter(id => !id.startsWith('temp-') && !id.startsWith('ai-') && !id.startsWith('user-'));
+      if (messageIds.length === 0) {
+        setReactions({});
+        return;
+      }
+
       const { data, error } = await supabase
         .from('message_reactions')
-        .select('*');
+        .select('id, message_id, user_id, emoji')
+        .in('message_id', messageIds);
       
       if (error) throw error;
       
@@ -336,7 +375,33 @@ export default function ChatScreen() {
   const fetchMessages = async () => {
     if (!user) return;
 
+    if (isAI) {
+      // AI Sohbeti için mesajları AsyncStorage'dan çekiyoruz (Ücretsiz ve bağımsız olması için)
+      try {
+        const key = `ai_chat_${user.id}`;
+        const stored = await AsyncStorage.getItem(key);
+        if (stored) {
+          setMessages(JSON.parse(stored));
+        } else {
+          // Başlangıç mesajı
+          const welcome: Message = {
+            id: 'ai-welcome',
+            sender_id: 'FOOD_AI',
+            receiver_id: user.id,
+            content: 'Merhaba! Ben Lezzet Arama Botu. 👨‍C Size bugün hangi tarifte veya kalori hesabında yardımcı olabilirim? (Örn: "Mercimek çorbası tarifi" veya "Elma kalori")',
+            created_at: new Date().toISOString()
+          };
+          setMessages([welcome]);
+        }
+      } catch (e) {
+        console.log("AI messages fetch error:", e);
+      }
+      setLoading(false);
+      return;
+    }
+
     let query = supabase.from('messages').select('*').order('created_at', { ascending: true });
+
 
     if (groupId) {
       query = query.eq('group_id', groupId);
@@ -406,6 +471,15 @@ export default function ChatScreen() {
       payload.receiver_id = userId;
     }
 
+    // AI sohbetinde mesajları veritabanına göndermiyoruz, sadece yerel state'de tutuyoruz
+    if (isAI) {
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, created_at: new Date().toISOString() } : m));
+      // AI yanıtını tetiklemek için sendAiMessage çağrılabilir ama genelde buton bazlı çağırıyoruz
+      // Burada sadece mesajı kaydedip çıkıyoruz
+      await AsyncStorage.setItem(`ai_chat_${user.id}`, JSON.stringify([...messages, optimisticMsg]));
+      return;
+    }
+
     const { data, error } = await supabase
       .from('messages')
       .insert(payload)
@@ -420,6 +494,43 @@ export default function ChatScreen() {
       setMessages(prev => prev.map(m => m.id === tempId ? { ...m, id: data.id, created_at: data.created_at } : m));
     }
   };
+
+  const sendAiMessage = async (text: string) => {
+    if (!user || !text.trim()) return;
+    
+    const userMsg: Message = {
+      id: `user-${Date.now()}`,
+      sender_id: user.id,
+      receiver_id: 'FOOD_AI',
+      content: text,
+      created_at: new Date().toISOString()
+    };
+
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInputText('');
+    await AsyncStorage.setItem(`ai_chat_${user.id}`, JSON.stringify(newMessages));
+
+    // Arama Botu Çalıştır (Artık AI değil, doğrudan web tarayıcı)
+    setIsTyping(true);
+    
+    // Scraper ile veriyi çek
+    const scraperResponse = await scraperService.handleQuery(text, user.id);
+    
+    const aiMsg: Message = {
+      id: `ai-${Date.now()}`,
+      sender_id: 'FOOD_AI',
+      receiver_id: user.id,
+      content: scraperResponse,
+      created_at: new Date().toISOString()
+    };
+
+    const finalMessages = [...newMessages, aiMsg];
+    setMessages(finalMessages);
+    setIsTyping(false);
+    await AsyncStorage.setItem(`ai_chat_${user.id}`, JSON.stringify(finalMessages));
+  };
+
 
   const handlePlusPress = async () => {
     Alert.alert(
@@ -454,7 +565,7 @@ export default function ChatScreen() {
             }
             if (isDietitian) {
               router.push({
-                pathname: '/create-diet-plan',
+                pathname: '/create-diet-plan' as any,
                 params: { userId: userId }
               });
             } else {
@@ -492,7 +603,11 @@ export default function ChatScreen() {
 
   // Calculate avatar source
   const fallbackImage = `https://ui-avatars.com/api/?name=${encodeURIComponent((groupId ? groupName : username) as string || 'User')}&background=random&color=fff`;
-  const imageDisplaySource = (avatarUrl as string) || fallbackImage;
+  let finalAvatarUrl = avatarUrl as string;
+  if (finalAvatarUrl && !finalAvatarUrl.startsWith('http')) {
+    finalAvatarUrl = supabase.storage.from('avatars').getPublicUrl(finalAvatarUrl).data.publicUrl;
+  }
+  const imageDisplaySource = avatarUrl === 'ai_avatar' ? aiAvatar : (finalAvatarUrl || fallbackImage);
 
   const renderInputArea = () => {
     if (groupId && groupRole === 'left') {
@@ -521,9 +636,10 @@ export default function ChatScreen() {
           />
         </View>
         {inputText.trim().length > 0 ? (
-          <TouchableOpacity style={[styles.sendButton, { backgroundColor: THEME_COLOR }]} onPress={() => sendMessage()}>
-            <Ionicons name="send" size={18} color="#fff" style={{ marginLeft: 3 }} />
-          </TouchableOpacity>
+        <TouchableOpacity style={[styles.sendButton, { backgroundColor: THEME_COLOR }]} onPress={() => isAI ? sendAiMessage(inputText) : sendMessage()}>
+          <Ionicons name="send" size={18} color="#fff" style={{ marginLeft: 3 }} />
+        </TouchableOpacity>
+
         ) : (
           <View style={[styles.sendButton, { backgroundColor: isDark ? '#333' : '#e0e0e0' }]}>
             <Ionicons name="send" size={18} color={isDark ? '#666' : '#fff'} style={{ marginLeft: 3 }} />
@@ -546,7 +662,7 @@ export default function ChatScreen() {
               activeOpacity={0.7}
               onPress={() => {
                 router.push({ 
-                  pathname: '/chat-settings', 
+                  pathname: '/chat-settings' as any, 
                   params: { 
                     userId, 
                     username, 
@@ -559,7 +675,7 @@ export default function ChatScreen() {
               }}
             >
               <Image
-                source={{ uri: imageDisplaySource }}
+                source={imageDisplaySource}
                 style={styles.headerAvatar}
                 contentFit="cover"
               />
@@ -588,9 +704,9 @@ export default function ChatScreen() {
       </View>
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={[styles.keyboardView, { backgroundColor: bgColor }]}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
         {loading ? (
           <View style={styles.loadingContainer}>
@@ -599,20 +715,43 @@ export default function ChatScreen() {
         ) : (
           <FlatList
             ref={flatListRef}
-            data={searchText ? messages.filter(m => m.content.toLowerCase().includes(searchText.toLowerCase())) : messages}
+            inverted={true}
+            data={searchText ? [...messages].filter(m => m.content.toLowerCase().includes(searchText.toLowerCase())).reverse() : [...messages].reverse()}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messagesList}
-            onContentSizeChange={() => !searchText && flatListRef.current?.scrollToEnd({ animated: true })}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            ListFooterComponent={isAI ? (
+              <View style={{ paddingVertical: 15, alignItems: 'center' }}>
+                <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: isDark ? '#2c1a1a' : '#fff0f3', justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 2, borderColor: '#ff4d4d33' }}>
+                  <Ionicons name="sparkles" size={40} color="#ff4d4d" />
+                </View>
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: textColor, marginBottom: 4 }}>Lezzet Asistanı</Text>
+                <Text style={{ fontSize: 13, color: subTextColor, textAlign: 'center', paddingHorizontal: 40 }}>
+                  Yapay zeka destekli mutfak yardımcınız. Tarifler sorabilir veya kalori hesabı yaptırabilirsiniz.
+                </Text>
+              </View>
+            ) : null}
             renderItem={({ item, index }) => {
+              const reversedMessages = searchText ? [...messages].filter(m => m.content.toLowerCase().includes(searchText.toLowerCase())).reverse() : [...messages].reverse();
               const isMe = item.sender_id === user?.id;
               const isDietPlan = item.content.startsWith('DIET_PLAN:::');
               const isDietProgress = item.content.startsWith('DIET_PROGRESS:::');
               const isPostShare = item.content.startsWith('POST_SHARE:::');
+              const isNutritionData = item.content.startsWith('NUTRITION_DATA:::');
               
-              const prevItem = index > 0 ? messages[index - 1] : null;
-              const nextItem = index < messages.length - 1 ? messages[index + 1] : null;
-              const isConsecutive = nextItem?.sender_id === item.sender_id;
-              const isFollowing = prevItem?.sender_id === item.sender_id;
+              // New: Better recommendation detection
+              const postRecMatch = item.content.match(/APP_POST:::([a-zA-Z0-9-]+)/);
+              const isPostRecommendation = !!postRecMatch;
+              const displayContent = isPostRecommendation 
+                ? item.content.replace(/APP_POST:::([a-zA-Z0-9-]+)/g, '').trim() 
+                : item.content;
+
+              const olderMessage = index < reversedMessages.length - 1 ? reversedMessages[index + 1] : null;
+              const newerMessage = index > 0 ? reversedMessages[index - 1] : null;
+              
+              const isFollowing = olderMessage?.sender_id === item.sender_id;
+              const isConsecutive = newerMessage?.sender_id === item.sender_id;
 
               return (
                 <View style={[
@@ -634,11 +773,23 @@ export default function ChatScreen() {
                         styles.messageBubble,
                         isMe ? styles.myMessage : styles.theirMessage,
                         isMe ? { backgroundColor: chatColor } : { backgroundColor: cardBg },
+                        item.sender_id === 'FOOD_AI' && { 
+                          backgroundColor: isDark ? '#2c1a1a' : '#fff0f3',
+                          borderWidth: 1,
+                          borderColor: '#ff4d4d22'
+                        },
                         isFollowing && (isMe ? styles.myMessageFollowing : styles.theirMessageFollowing),
                         isConsecutive && (isMe ? styles.myMessageConsecutive : styles.theirMessageConsecutive),
-                        (isDietPlan || isDietProgress || isPostShare) && { maxWidth: '100%' },
+                        (isDietPlan || isDietProgress || isPostShare || isNutritionData || isPostRecommendation) && { maxWidth: '100%' },
                         { maxWidth: '100%' }
                       ]}>
+                        {item.sender_id === 'FOOD_AI' && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                            <Ionicons name="sparkles" size={12} color="#ff4d4d" />
+                            <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#ff4d4d', marginLeft: 4 }}>Lezzet Asistanı AI</Text>
+                          </View>
+                        )}
+
                         {isDietPlan ? (
                           <View>
                             <Text style={[styles.structuredTitle, { color: isMe ? '#fff' : textColor }]}>📋 Haftalık Diyet Listesi</Text>
@@ -646,7 +797,7 @@ export default function ChatScreen() {
                               style={[styles.structuredBox, { backgroundColor: isMe ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }]}
                               onPress={() => {
                                 const json = item.content.replace('DIET_PLAN:::', '');
-                                router.push({ pathname: '/diet-plan-detail', params: { planData: json } });
+                                router.push({ pathname: '/diet-plan-detail' as any, params: { planData: json } });
                               }}
                             >
                               <Text style={{ color: isMe ? '#e0e0e0' : subTextColor, fontStyle: 'italic', fontSize: 13 }}>Görüntülemek için dokunun</Text>
@@ -657,13 +808,38 @@ export default function ChatScreen() {
                                 onPress={async () => {
                                   if (!user?.id) return;
                                   const json = item.content.replace('DIET_PLAN:::', '');
-                                  router.push({ pathname: '/payment', params: { planData: json, dietitianId: item.sender_id } });
+                                  router.push({ pathname: '/payment' as any, params: { planData: json, dietitianId: item.sender_id } });
                                 }}
                               >
                                 <Text style={styles.actionButtonText}>Satın Al ve Uygula</Text>
                               </TouchableOpacity>
                             )}
                           </View>
+                        ) : isPostRecommendation ? (
+                           <View>
+                              <Text style={[styles.messageText, { color: isMe ? '#fff' : textColor }]}>
+                                {displayContent}
+                              </Text>
+                              <TouchableOpacity
+                                style={[styles.structuredBox, { 
+                                    backgroundColor: isMe ? 'rgba(255,255,255,0.2)' : 'rgba(128,0,32,0.1)', 
+                                    borderColor: THEME_COLOR, 
+                                    borderWidth: 1,
+                                    marginTop: 10,
+                                    padding: 12,
+                                    borderRadius: 12
+                                }]}
+                                onPress={() => {
+                                  const postId = postRecMatch[1];
+                                  router.push({ pathname: '/post-detail' as any, params: { postId } });
+                                }}
+                              >
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                                  <Ionicons name="restaurant" size={20} color={isMe ? '#fff' : THEME_COLOR} />
+                                  <Text style={{ color: isMe ? '#fff' : THEME_COLOR, fontWeight: 'bold', marginLeft: 10 }}>Önerilen Gönderiyi Gör</Text>
+                                </View>
+                              </TouchableOpacity>
+                           </View>
                         ) : isDietProgress ? (
                           <View>
                             <Text style={[styles.structuredTitle, { color: isMe ? '#fff' : textColor }]}>📊 Diyet İlerlemesi</Text>
@@ -674,7 +850,7 @@ export default function ChatScreen() {
                                   const json = item.content.replace('DIET_PROGRESS:::', '');
                                   const payload = JSON.parse(json);
                                   router.push({
-                                    pathname: '/diet-plan-detail',
+                                    pathname: '/diet-plan-detail' as any,
                                     params: { planData: JSON.stringify(payload.plan), progressData: JSON.stringify(payload.progress) }
                                   });
                                 } catch (e) { Alert.alert("Hata", "Veri okunamadı"); }
@@ -685,14 +861,115 @@ export default function ChatScreen() {
                           </View>
                         ) : isPostShare ? (
                           <SharedPostBubble postId={item.content.replace('POST_SHARE:::', '')} isMe={isMe} router={router} />
+                        ) : item.content.includes('APP_RECIPE:::') ? (
+                          <View>
+                            {item.content.split(/APP_RECIPE:::\S+/).map((textPart: string, idx: number) => {
+                              if (!textPart.trim()) return null;
+                              return (
+                                <Text key={idx} style={[styles.messageText, { color: isMe ? '#fff' : textColor, marginBottom: 8 }]}>
+                                  {textPart.trim()}
+                                </Text>
+                              );
+                            })}
+                            {(() => {
+                               const match = item.content.match(/APP_RECIPE:::([a-zA-Z0-9-]+)/);
+                               if (match) {
+                                 return <SharedPostBubble postId={match[1]} isMe={isMe} router={router} />;
+                               }
+                               return null;
+                            })()}
+                          </View>
+                        ) : isNutritionData ? (
+                          <View style={{ width: 240, padding: 5 }}>
+                            {(() => {
+                              try {
+                                const data = JSON.parse(item.content.replace('NUTRITION_DATA:::', ''));
+                                return (
+                                  <View>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+                                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#ff4d4d22', justifyContent: 'center', alignItems: 'center', marginRight: 10 }}>
+                                        <Ionicons name="nutrition" size={20} color="#ff4d4d" />
+                                      </View>
+                                      <View style={{ flex: 1 }}>
+                                        <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 16 }}>{data.name}</Text>
+                                        <Text style={{ fontSize: 11, color: isMe ? 'rgba(255,255,255,0.6)' : subTextColor }}>{data.source} • 100g/Porsiyon</Text>
+                                      </View>
+                                    </View>
+                                    
+                                    <View style={{ backgroundColor: isMe ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.03)', borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                                        <Text style={{ color: isMe ? '#eee' : '#555', fontSize: 13 }}>🔥 Enerji</Text>
+                                        <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 13 }}>{data.kcal} kcal</Text>
+                                      </View>
+                                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                                        <Text style={{ color: isMe ? '#eee' : '#555', fontSize: 13 }}>🥩 Protein</Text>
+                                        <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 13 }}>{data.protein} g</Text>
+                                      </View>
+                                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                                        <Text style={{ color: isMe ? '#eee' : '#555', fontSize: 13 }}>🥑 Yağ</Text>
+                                        <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 13 }}>{data.fat} g</Text>
+                                      </View>
+                                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                                        <Text style={{ color: isMe ? '#eee' : '#555', fontSize: 13 }}>🍞 Karbonhidrat</Text>
+                                        <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 13 }}>{data.carbs} g</Text>
+                                      </View>
+                                      {data.fiber !== '---' && (
+                                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                          <Text style={{ color: isMe ? '#eee' : '#555', fontSize: 13 }}>🌿 Lif</Text>
+                                          <Text style={{ fontWeight: 'bold', color: isMe ? '#fff' : textColor, fontSize: 13 }}>{data.fiber} g</Text>
+                                        </View>
+                                      )}
+                                    </View>
+
+                                    <TouchableOpacity 
+                                      style={{ 
+                                        backgroundColor: '#ff4d4d', 
+                                        borderRadius: 8, 
+                                        paddingVertical: 8, 
+                                        alignItems: 'center',
+                                        flexDirection: 'row',
+                                        justifyContent: 'center'
+                                      }}
+                                      onPress={async () => {
+                                        try {
+                                          const logKey = `daily_food_log_${user?.id}_${new Date().toISOString().split('T')[0]}`;
+                                          const existing = await AsyncStorage.getItem(logKey);
+                                          const logs = existing ? JSON.parse(existing) : [];
+                                          logs.push({ ...data, time: new Date().toISOString() });
+                                          await AsyncStorage.setItem(logKey, JSON.stringify(logs));
+                                          Alert.alert("Başarılı", `${data.name} günlük günlüğünüze eklendi! 🍎`);
+                                        } catch (e) {
+                                          Alert.alert("Hata", "Eklenirken bir sorun oluştu.");
+                                        }
+                                      }}
+                                    >
+                                      <Ionicons name="add-circle-outline" size={16} color="#fff" style={{ marginRight: 5 }} />
+                                      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>Günlüğe Ekle</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                );
+                              } catch (e) {
+                                return <Text style={{ color: isMe ? '#fff' : textColor }}>Veri okuma hatası.</Text>;
+                              }
+                            })()}
+                          </View>
                         ) : (
                           <Text style={[styles.messageText, { color: isMe ? '#fff' : textColor }]}>
                             {item.content}
                           </Text>
                         )}
-                        <Text style={[styles.timeText, { color: isMe ? 'rgba(255,255,255,0.7)' : subTextColor }]}>
-                          {new Date(item.created_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end' }}>
+                          <Text style={[styles.timeText, { color: isMe ? 'rgba(255,255,255,0.7)' : subTextColor, marginRight: 4 }]}>
+                            {new Date(item.created_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
+                          </Text>
+                          {isMe && !groupId && (
+                            <Ionicons 
+                              name={item.is_read ? "checkmark-done" : "checkmark"} 
+                              size={16} 
+                              color={item.is_read ? "#4db8ff" : "rgba(255,255,255,0.5)"} 
+                            />
+                          )}
+                        </View>
                       </View>
                     </Pressable>
 
@@ -725,7 +1002,43 @@ export default function ChatScreen() {
             }}
           />
         )}
+        {isAI && inputText.length === 0 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 8 }} style={{ maxHeight: 60, marginBottom: 5 }}>
+            {[
+              "Pratik akşam yemeği 🌙",
+              "100g tavuk kalorisi 🍗",
+              "Sağlıklı tatlı krizi 🍎",
+              "Günün menüsü 📋",
+              "Düşük karbonhidratlı tarif 🥗"
+            ].map((suggest, idx) => (
+              <TouchableOpacity 
+                key={idx} 
+                onPress={() => sendAiMessage(suggest)}
+                style={{ 
+                  backgroundColor: isDark ? '#2a2a2a' : '#fff', 
+                  paddingHorizontal: 15, 
+                  paddingVertical: 8, 
+                  borderRadius: 20, 
+                  marginRight: 8,
+                  borderWidth: 1,
+                  borderColor: isDark ? '#444' : '#eee',
+                  height: 36,
+                  justifyContent: 'center'
+                }}
+              >
+                <Text style={{ color: isDark ? '#ddd' : '#555', fontSize: 13 }}>{suggest}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+        {isTyping && (
+
+          <View style={[styles.typingContainer, { backgroundColor: cardBg }]}>
+            <Text style={{ color: subTextColor, fontSize: 12, fontStyle: 'italic' }}>Lezzet Asistanı yazıyor...</Text>
+          </View>
+        )}
         {renderInputArea()}
+
 
         {/* Emoji Picker Modal */}
         <Modal
@@ -913,5 +1226,12 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     paddingVertical: 8,
+  },
+  typingContainer: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderTopLeftRadius: 15,
+    borderTopRightRadius: 15,
   }
 });
+

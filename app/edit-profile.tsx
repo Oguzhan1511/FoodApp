@@ -1,5 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
@@ -15,15 +17,15 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { supabase } from '../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
 export default function EditProfileScreen() {
     const router = useRouter();
     const { intent } = useLocalSearchParams<{ intent?: string }>();
-    const { user } = useAuth();
+    const { user, updateUser } = useAuth();
 
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -40,6 +42,7 @@ export default function EditProfileScreen() {
         avatarUrl: '' as string | null,
         address: '',     // Business only
         phoneNumber: '', // Business only
+        menuUrl: [] as string[], // Artık bir dizi
     });
     const [accountType, setAccountType] = useState('personal');
 
@@ -69,6 +72,7 @@ export default function EditProfileScreen() {
                     avatarUrl: dietitian.profile_picture || null,
                     address: '',
                     phoneNumber: '',
+                    menuUrl: [] as string[],
                 });
             } else {
                 // Fallback to regular profile
@@ -85,13 +89,23 @@ export default function EditProfileScreen() {
                     
                     let address = '';
                     let phoneNumber = '';
+                    let menuUrlArray: string[] = [];
                     
-                    // DB'de gerçekten business ise eski adres verisi var mı bakıyoruz
                     if (profile.account_type === 'business') {
                         const { data: bData } = await supabase.from('business_profiles').select('*').eq('id', user?.id).maybeSingle();
                         if (bData) {
                             address = bData.address || '';
                             phoneNumber = bData.phone_number || '';
+                            const rawMenu = bData.menu_url;
+                            if (rawMenu) {
+                                try {
+                                    menuUrlArray = (typeof rawMenu === 'string' && rawMenu.startsWith('[')) 
+                                        ? JSON.parse(rawMenu) 
+                                        : [rawMenu];
+                                } catch (e) {
+                                    menuUrlArray = [rawMenu];
+                                }
+                            }
                         }
                     }
 
@@ -105,6 +119,7 @@ export default function EditProfileScreen() {
                         avatarUrl: profile.avatar_url || null,
                         address: address,
                         phoneNumber: phoneNumber,
+                        menuUrl: menuUrlArray,
                     });
                 }
             }
@@ -128,39 +143,85 @@ export default function EditProfileScreen() {
             setFormData({ ...formData, avatarUrl: result.assets[0].uri });
         }
     };
+ 
+    const pickMenuImage = async () => {
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images, 
+            allowsMultipleSelection: true, // Çoklu seçim aktif
+            quality: 0.8,
+        });
+ 
+        if (!result.canceled) {
+            const newUris = result.assets.map(asset => asset.uri);
+            const currentMenus = Array.isArray(formData.menuUrl) ? formData.menuUrl : [];
+            setFormData({ ...formData, menuUrl: [...currentMenus, ...newUris] });
+        }
+    };
 
     const uploadImage = async (uri: string) => {
         try {
-            const formData = new FormData();
-            formData.append('file', {
-                uri: uri,
-                name: `avatar-${Date.now()}.jpg`,
-                type: 'image/jpeg',
-            } as any);
+            console.log("Reading avatar file as base64...");
+            const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+            const arrayBuffer = decode(base64);
 
-            const fileExt = uri.split('.').pop();
-            const fileName = `${user?.id || Date.now()}${Math.random()}.${fileExt}`;
-            const filePath = `${fileName}`;
+            const fileExt = uri.split('.').pop() || 'jpg';
+            const fileName = `avatar_${user?.id}_${Date.now()}.${fileExt}`;
 
+            console.log("Uploading avatar to 'avatars' bucket...");
             const { error: uploadError } = await supabase.storage
                 .from('avatars')
-                .upload(filePath, formData, {
-                    contentType: 'image/jpeg',
+                .upload(fileName, arrayBuffer, {
+                    contentType: `image/${fileExt === 'png' ? 'png' : 'jpeg'}`,
                     upsert: true
                 });
 
-            if (uploadError) {
-                console.error("Supabase Storage Upload Error:", uploadError);
-                throw uploadError;
-            }
+            if (uploadError) throw uploadError;
 
-            // Public URL logic remains (or we can return just the path if using Signed URL logic mostly)
-            // But let's keep returning a public URL for now as fallback
-            const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
-            console.log("Generated Public URL:", data.publicUrl);
+            const { data } = supabase.storage.from('avatars').getPublicUrl(fileName);
+            console.log("Avatar upload successful. Public URL:", data.publicUrl);
             return data.publicUrl;
         } catch (error) {
-            console.error("Upload into 'avatars' bucket failed:", error);
+            console.error("Avatar upload failed:", error);
+            throw error;
+        }
+    };
+
+    const uploadMenu = async (uris: string[]) => {
+        try {
+            const uploadedUrls: string[] = [];
+
+            for (const uri of uris) {
+                // Eğer zaten bir web linki ise direkt ekle
+                if (!uri.startsWith('file://')) {
+                    uploadedUrls.push(uri);
+                    continue;
+                }
+
+                console.log("Reading menu file as base64...");
+                const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+                const arrayBuffer = decode(base64);
+
+                const fileExt = uri.split('.').pop() || 'jpg';
+                const fileName = `menu_${user?.id}_${Date.now()}_${uploadedUrls.length}.${fileExt}`;
+
+                console.log(`Uploading menu ${uploadedUrls.length + 1} to 'avatars' bucket...`);
+                const { error: uploadError } = await supabase.storage
+                    .from('avatars')
+                    .upload(fileName, arrayBuffer, {
+                        contentType: `image/${fileExt === 'png' ? 'png' : 'jpeg'}`,
+                        upsert: true
+                    });
+
+                if (uploadError) throw uploadError;
+
+                const { data } = supabase.storage.from('avatars').getPublicUrl(fileName);
+                uploadedUrls.push(data.publicUrl);
+            }
+
+            console.log("All menus uploaded. URLs:", uploadedUrls);
+            return uploadedUrls;
+        } catch (error) {
+            console.error("Menu upload failed (Base64):", error);
             throw error;
         }
     };
@@ -171,13 +232,13 @@ export default function EditProfileScreen() {
             console.log("Starting save process...");
             let publicUrl = formData.avatarUrl;
 
-            // Upload only if it's a local file (starts with file://)
+            // 1. Profil Resmi Yükleme
             if (formData.avatarUrl && formData.avatarUrl.startsWith('file://')) {
-                console.log("Uploading local file:", formData.avatarUrl);
+                console.log("Uploading local avatar file:", formData.avatarUrl);
                 publicUrl = await uploadImage(formData.avatarUrl);
-                console.log("Upload complete. New Public URL:", publicUrl);
             }
 
+            // 2. Profil Güncelleme (Dietitian veya User)
             if (role === 'dietitian') {
                 const updates = {
                     first_name: formData.firstName,
@@ -187,9 +248,11 @@ export default function EditProfileScreen() {
                     location: formData.location,
                     profile_picture: publicUrl
                 };
-                console.log("Updating dietitian profile with:", updates);
                 const { error } = await supabase.from('dietitians').update(updates).eq('id', user?.id);
                 if (error) throw error;
+
+                // Diyetisyen olsa bile profiles tablosundaki avatar_url'i de güncelle (AuthContext ve Story için)
+                await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', user?.id);
             } else {
                 const updates: any = {
                     ad: formData.firstName,
@@ -199,33 +262,44 @@ export default function EditProfileScreen() {
                     avatar_url: publicUrl
                 };
 
-                // Eğer kişi şu an İşletme'ye geçiş yapıyorsa ya da zaten bir İşletmeyse:
                 if (intent === 'become_business' || accountType === 'business') {
                     updates.account_type = 'business';
                 }
 
                 const { error } = await supabase.from('profiles').update(updates).eq('id', user?.id);
                 if (error) throw error;
+            }
+
+            // 3. AuthContext'i Güncelle (Ana sayfa ve profil sekmeleri için)
+            if (updateUser) {
+                updateUser({ 
+                    avatar_url: publicUrl,
+                    ad: formData.firstName,
+                    soyad: formData.lastName,
+                    username: formData.username
+                });
+            }
                 
-                if (intent === 'become_business' || accountType === 'business') {
-                    // İşletme hesabı ise business tablosunu da güncelle
-                    const busUpdates = {
-                        id: user?.id,
-                        address: formData.address,
-                        phone_number: formData.phoneNumber
-                    };
-                    const { error: bError } = await supabase.from('business_profiles').upsert(busUpdates);
-                    if (bError) console.error("Business table upsert hatası", bError);
-                }
+            // 4. İşletme Verilerini Güncelleme
+            if (intent === 'become_business' || accountType === 'business') {
+                const uploadedMenuUrls = await uploadMenu(formData.menuUrl);
+                
+                const busUpdates = {
+                    id: user?.id,
+                    address: formData.address,
+                    phone_number: formData.phoneNumber,
+                    menu_url: JSON.stringify(uploadedMenuUrls)
+                };
+                const { error: bError } = await supabase.from('business_profiles').upsert(busUpdates);
+                if (bError) throw bError;
             }
 
             Alert.alert('Başarılı', 'Profil bilgileriniz güncellendi.', [
                 { text: 'Tamam', onPress: () => router.back() }
             ]);
-
         } catch (error: any) {
-            console.error('Update error:', error);
-            Alert.alert('Hata', 'Güncelleme başarısız: ' + error.message);
+            console.error("Save error:", error);
+            Alert.alert('Hata', error.message || 'Profil güncellenirken bir hata oluştu.');
         } finally {
             setSaving(false);
         }
@@ -331,11 +405,28 @@ export default function EditProfileScreen() {
                             <Text style={[styles.label, { marginTop: 15 }]}>İletişim Numarası (WhatsApp)</Text>
                             <TextInput
                                 style={styles.input}
-                                value={formData.phoneNumber}
-                                onChangeText={(t) => setFormData({ ...formData, phoneNumber: t })}
-                                placeholder="Örn: 0555..."
                                 keyboardType="phone-pad"
                             />
+
+                            <Text style={[styles.label, { marginTop: 15 }]}>Menü (Birden fazla seçebilirsiniz)</Text>
+                            <TouchableOpacity style={styles.menuUploadButton} onPress={pickMenuImage}>
+                                {formData.menuUrl && formData.menuUrl.length > 0 ? (
+                                    <View style={styles.menuPreviewContainer}>
+                                        <Ionicons name="images" size={24} color={THEME_COLOR} />
+                                        <Text style={styles.menuFileName} numberOfLines={1}>
+                                            {formData.menuUrl.length} Fotoğraf Seçildi
+                                        </Text>
+                                        <TouchableOpacity onPress={() => setFormData({ ...formData, menuUrl: [] })}>
+                                            <Ionicons name="close-circle" size={20} color="#ff4d4d" />
+                                        </TouchableOpacity>
+                                    </View>
+                                ) : (
+                                    <View style={styles.menuPlaceholder}>
+                                        <Ionicons name="cloud-upload-outline" size={24} color="#666" />
+                                        <Text style={styles.menuPlaceholderText}>Menü Fotoğrafları Seç</Text>
+                                    </View>
+                                )}
+                            </TouchableOpacity>
                         </>
                     )}
                 </View>
@@ -381,5 +472,35 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         fontSize: 16,
         color: '#333'
+    },
+    menuUploadButton: {
+        marginTop: 5,
+        borderWidth: 1,
+        borderColor: '#ddd',
+        borderRadius: 8,
+        borderStyle: 'dashed',
+        padding: 15,
+        backgroundColor: '#fafafa'
+    },
+    menuPlaceholder: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10
+    },
+    menuPlaceholderText: {
+        color: '#666',
+        fontSize: 14
+    },
+    menuPreviewContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between'
+    },
+    menuFileName: {
+        flex: 1,
+        marginHorizontal: 10,
+        color: '#333',
+        fontSize: 14
     }
 });

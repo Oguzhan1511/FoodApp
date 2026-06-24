@@ -13,9 +13,9 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 export default function CreateChatScreen() {
     const router = useRouter();
@@ -45,34 +45,51 @@ export default function CreateChatScreen() {
 
     const fetchFriends = async () => {
         try {
-            const { data, error } = await supabase
+            // Sadece karşılıklı takipleşenleri (arkadaşları) bul
+            const { data: allFollows, error: fError } = await supabase
                 .from('user_follows')
                 .select('follower_id, following_id')
-                .eq('status', 'accepted')
-                .or(`follower_id.eq.${user?.id},following_id.eq.${user?.id}`);
+                .or(`follower_id.eq.${user?.id},following_id.eq.${user?.id}`)
+                .eq('status', 'accepted');
 
-            if (error) throw error;
+            if (fError) throw fError;
 
-            if (data && data.length > 0) {
-                const uniqueIds = new Set<string>();
-                data.forEach((d: any) => {
-                    uniqueIds.add(d.follower_id === user?.id ? d.following_id : d.follower_id);
-                });
-                
-                const { data: profiles, error: pError } = await supabase
-                    .from('profiles')
-                    .select('id, username, ad, soyad, avatar_url')
-                    .in('id', Array.from(uniqueIds));
+            if (allFollows && allFollows.length > 0) {
+                // Takip ettiklerim
+                const followingIds = new Set(
+                    allFollows
+                        .filter((f: any) => f.follower_id === user?.id)
+                        .map((f: any) => f.following_id)
+                );
 
-                if (pError) throw pError;
+                // Beni takip edenler
+                const followerIds = new Set(
+                    allFollows
+                        .filter((f: any) => f.following_id === user?.id)
+                        .map((f: any) => f.follower_id)
+                );
 
-                const formatted = (profiles || []).map((p: any) => ({
-                    id: p.id,
-                    username: p.username,
-                    name: `${p.ad} ${p.soyad}`,
-                    avatar_url: p.avatar_url
-                }));
-                setFriends(formatted);
+                // Karşılıklı olanları (intersect) bul
+                const mutualIds = Array.from(followingIds).filter(id => followerIds.has(id));
+
+                if (mutualIds.length > 0) {
+                    const { data: profiles, error: pError } = await supabase
+                        .from('profiles')
+                        .select('id, username, ad, soyad, avatar_url')
+                        .in('id', mutualIds);
+
+                    if (pError) throw pError;
+
+                    const formatted = (profiles || []).map((p: any) => ({
+                        id: p.id,
+                        username: p.username,
+                        name: `${p.ad} ${p.soyad}`,
+                        avatar_url: p.avatar_url
+                    }));
+                    setFriends(formatted);
+                } else {
+                    setFriends([]);
+                }
             } else {
                 setFriends([]);
             }
@@ -104,7 +121,7 @@ export default function CreateChatScreen() {
                 // 1-1 Sohbet
                 const [userId] = Array.from(selectedUsers);
                 const friend = friends.find(f => f.id === userId);
-                router.replace({ pathname: '/chat', params: { userId: userId, username: friend.username, avatarUrl: friend.avatar_url } });
+                router.replace({ pathname: '/chat' as any, params: { userId: userId, username: friend.username, avatarUrl: friend.avatar_url } });
             } else {
                 // Grup Sohbeti
                 if (!groupName.trim()) {
@@ -137,7 +154,7 @@ export default function CreateChatScreen() {
 
                 if (memberError) throw memberError;
 
-                router.replace({ pathname: '/chat', params: { groupId: groupData.id, groupName: groupName } });
+                router.replace({ pathname: '/chat' as any, params: { groupId: groupData.id, groupName: groupName } });
             }
         } catch (error: any) {
             console.error("Sohbet oluşturma hatası:", error);

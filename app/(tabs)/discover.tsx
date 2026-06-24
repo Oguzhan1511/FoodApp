@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
     ActivityIndicator,
     Dimensions,
@@ -16,9 +16,9 @@ import {
     View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAuth } from '../AuthContext';
-import { useTheme } from '../ThemeContext';
-import { supabase } from '../services/supabaseConfig';
+import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
+import { supabase } from '../../services/supabaseConfig';
 
 const { width } = Dimensions.get('window');
 
@@ -39,6 +39,7 @@ interface DiscoverPost {
 
 export default function DiscoverScreen() {
     const router = useRouter();
+    const { search } = useLocalSearchParams<{ search?: string }>();
     const { user } = useAuth();
     const { theme } = useTheme();
     const isDark = theme === 'dark';
@@ -60,69 +61,159 @@ export default function DiscoverScreen() {
     const [feedLoading, setFeedLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
 
+    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     useEffect(() => {
         fetchDiscoverFeed();
-    }, []);
+        if (search) {
+            handleSearch(search);
+        }
+        return () => {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+        };
+    }, [search]);
 
     const fetchDiscoverFeed = async () => {
         try {
             setFeedLoading(true);
+            const myId = user?.id;
 
-            // 1. Fetch latest 50 posts
-            const { data: posts, error } = await supabase
-                .from('posts')
-                .select('*')
-                .order('created_at', { ascending: false })
-                .limit(50);
+            // ========== 1. KULLANICININ İLGİ ALANLARINI ANALİZ ET ==========
+            let topTags: string[] = [];
+            let likedPostIds = new Set<string>();
 
-            if (error) throw error;
-            if (!posts || posts.length === 0) {
-                setFeedPosts([]);
-                return;
+            if (myId) {
+                // Son 30 beğeniyi çek
+                const { data: recentLikes } = await supabase
+                    .from('post_likes')
+                    .select('post_id')
+                    .eq('user_id', myId)
+                    .order('created_at', { ascending: false })
+                    .limit(30);
+
+                if (recentLikes && recentLikes.length > 0) {
+                    const likedIds = recentLikes.map(l => l.post_id);
+                    likedIds.forEach(id => likedPostIds.add(id));
+
+                    // Beğenilen postların tag'lerini çek
+                    const { data: likedPosts } = await supabase
+                        .from('posts')
+                        .select('tags')
+                        .in('id', likedIds);
+
+                    if (likedPosts) {
+                        const tagCounts: Record<string, number> = {};
+                        likedPosts.forEach(p => {
+                            if (p.tags) {
+                                p.tags.split(',').map((t: string) => t.trim().toLowerCase()).forEach((t: string) => {
+                                    if (t && t.length > 1) tagCounts[t] = (tagCounts[t] || 0) + 1;
+                                });
+                            }
+                        });
+                        // En çok beğenilen 5 tag
+                        topTags = Object.entries(tagCounts)
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 5)
+                            .map(e => e[0]);
+                    }
+                }
             }
 
-            const userIds = [...new Set(posts.map(p => p.user_id))];
+            // ========== 2. FARKLI KAYNAKLARDAN POST ÇEK ==========
+            const allPostsMap = new Map<string, any>();
 
-            // 2. Fetch User Profiles to check privacy
-            const { data: profiles } = await supabase
-                .from('profiles')
-                .select('id, is_private')
-                .in('id', userIds);
+            // 2a. İlgi alanına göre postlar (tag eşleşmesi)
+            if (topTags.length > 0) {
+                const tagFilters = topTags.map(tag => `tags.ilike.%${tag}%`).join(',');
+                const { data: interestPosts } = await supabase
+                    .from('posts')
+                    .select('id, image_url, user_id, created_at, tags, likes, is_sponsored')
+                    .or(tagFilters)
+                    .order('likes', { ascending: false })
+                    .limit(30);
 
-            // 3. Fetch Dietitians (always public)
-            const { data: dietitians } = await supabase
-                .from('dietitians')
-                .select('id')
-                .in('id', userIds);
+                interestPosts?.forEach(p => {
+                    // İlgi skoru hesapla
+                    const matchCount = topTags.filter(tag => 
+                        p.tags?.toLowerCase().includes(tag)
+                    ).length;
+                    allPostsMap.set(p.id, { ...p, _score: matchCount * 10 + (p.likes || 0), _source: 'interest' });
+                });
+            }
 
-            const privateUserIds = new Set<string>();
-            const dietitianIds = new Set<string>();
+            // 2b. Popüler/Trend postlar (çok beğenilen)
+            const { data: trendingPosts } = await supabase
+                .from('posts')
+                .select('id, image_url, user_id, created_at, tags, likes, is_sponsored')
+                .order('likes', { ascending: false })
+                .limit(20);
 
-            profiles?.forEach(p => {
-                if (p.is_private) privateUserIds.add(p.id);
+            trendingPosts?.forEach(p => {
+                if (!allPostsMap.has(p.id)) {
+                    allPostsMap.set(p.id, { ...p, _score: (p.likes || 0), _source: 'trending' });
+                }
             });
 
-            dietitians?.forEach(d => {
-                dietitianIds.add(d.id);
+            // 2c. Yeni postlar (keşif çeşitliliği için)
+            const { data: recentPosts } = await supabase
+                .from('posts')
+                .select('id, image_url, user_id, created_at, tags, likes, is_sponsored')
+                .order('created_at', { ascending: false })
+                .limit(30);
+
+            recentPosts?.forEach(p => {
+                if (!allPostsMap.has(p.id)) {
+                    allPostsMap.set(p.id, { ...p, _score: 1, _source: 'recent' });
+                }
             });
 
-            // 4. Filter posts
-            // Show if: User is Dietitian OR (User is NOT private)
-            // Note: If user is not in profiles AND not in dietitians, we assume public or skip? 
-            // Let's assume public if not explicitly private, but usually they should be in profiles.
-
-            const filteredPosts = posts.filter(p => {
-                const isDietitian = dietitianIds.has(p.user_id);
-                const isPrivate = privateUserIds.has(p.user_id);
-
-                // Diyetisyense göster. Değilse ve gizliyse gösterme.
-                if (isDietitian) return true;
-                if (isPrivate) return false;
-
-                return true; // Public user
+            // 2d. Sponsorlu postları boost et
+            allPostsMap.forEach((post, id) => {
+                if (post.is_sponsored) {
+                    post._score += 15;
+                }
             });
 
-            setFeedPosts(filteredPosts);
+            let allPosts = Array.from(allPostsMap.values());
+
+            // Kendi beğendiklerini aşağıya it (zaten gördü)
+            allPosts = allPosts.map(p => ({
+                ...p,
+                _score: likedPostIds.has(p.id) ? p._score * 0.3 : p._score
+            }));
+
+            // ========== 3. GİZLİLİK FİLTRESİ ==========
+            if (allPosts.length > 0) {
+                const userIds = [...new Set(allPosts.map(p => p.user_id))];
+
+                const [profilesRes, dietitiansRes] = await Promise.all([
+                    supabase.from('profiles').select('id, is_private').in('id', userIds),
+                    supabase.from('dietitians').select('id').in('id', userIds)
+                ]);
+
+                const privateUserIds = new Set<string>();
+                const dietitianIds = new Set<string>();
+
+                profilesRes.data?.forEach(p => {
+                    if (p.is_private) privateUserIds.add(p.id);
+                });
+                dietitiansRes.data?.forEach(d => dietitianIds.add(d.id));
+
+                allPosts = allPosts.filter(p => {
+                    if (dietitianIds.has(p.user_id)) return true;
+                    if (privateUserIds.has(p.user_id)) return false;
+                    return true;
+                });
+            }
+
+            // ========== 4. SIRALAMA & KARİŞTIRMA ==========
+            // Skora göre sırala ama hafif rastgelelik ekle (her yenilemede farklı akış)
+            allPosts.sort((a, b) => {
+                const noise = (Math.random() - 0.5) * 5; // ±2.5 puan rastgelelik
+                return (b._score + noise) - (a._score + noise);
+            });
+
+            setFeedPosts(allPosts.slice(0, 60));
 
         } catch (error) {
             console.error("Feed error:", error);
@@ -132,7 +223,8 @@ export default function DiscoverScreen() {
         }
     };
 
-    const handleSearch = async (text: string) => {
+    const debouncedSearch = useCallback((text: string) => {
+        if (debounceRef.current) clearTimeout(debounceRef.current);
         setSearchQuery(text);
 
         if (text.length < 2) {
@@ -140,6 +232,14 @@ export default function DiscoverScreen() {
             setPostResults([]);
             return;
         }
+
+        debounceRef.current = setTimeout(() => {
+            handleSearch(text);
+        }, 300);
+    }, []);
+
+    const handleSearch = async (text: string) => {
+        if (text.length < 2) return;
 
         setLoading(true);
         try {
@@ -151,13 +251,12 @@ export default function DiscoverScreen() {
                 .neq('id', user?.id || '')
                 .limit(10);
 
-            // Post / Etiket sorgusu (Sadece etiketlerde arasın)
             const postQuery = supabase
                 .from('posts')
-                .select('*')
+                .select('id, image_url, user_id, tags')
                 .ilike('tags', `%${text}%`)
                 .order('created_at', { ascending: false })
-                .limit(21); // 3'lü grid için 21 iyi
+                .limit(21);
 
             const [userRes, postRes] = await Promise.all([userQuery, postQuery]);
 
@@ -206,7 +305,7 @@ export default function DiscoverScreen() {
     const renderResultItem = ({ item }: { item: UserProfile }) => (
         <TouchableOpacity
             style={[styles.resultItem, { backgroundColor: cardBg }]}
-            onPress={() => router.push({ pathname: "/user-profile", params: { userId: item.id } })}
+            onPress={() => router.push({ pathname: '/user-profile' as any, params: { userId: item.id } })}
         >
             <Image
                 source={{ uri: item.avatar_url || `https://ui-avatars.com/api/?name=${item.username}&background=random` }}
@@ -224,13 +323,13 @@ export default function DiscoverScreen() {
     const renderPostItem = ({ item }: { item: DiscoverPost }) => (
         <TouchableOpacity
             style={styles.gridItem}
-            onPress={() => router.push({ pathname: "/post-detail", params: { postId: item.id } })}
+            onPress={() => router.push({ pathname: '/post-detail' as any, params: { postId: item.id } })}
         >
             <Image
-                source={{ uri: item.image_url }}
+                source={{ uri: item.image_url?.split(',')[0] }}
                 style={styles.gridImage}
                 contentFit="cover"
-                transition={500}
+                transition={200}
             />
         </TouchableOpacity>
     );
@@ -245,7 +344,7 @@ export default function DiscoverScreen() {
                     placeholder="Kullanıcı ara..."
                     placeholderTextColor={subTextColor}
                     value={searchQuery}
-                    onChangeText={handleSearch}
+                    onChangeText={debouncedSearch}
                     autoCapitalize="none"
                 />
                 {searchQuery.length > 0 && (
@@ -299,6 +398,10 @@ export default function DiscoverScreen() {
                         renderItem={renderPostItem}
                         numColumns={3}
                         contentContainerStyle={styles.gridContainer}
+                        initialNumToRender={12}
+                        maxToRenderPerBatch={12}
+                        windowSize={5}
+                        removeClippedSubviews={true}
                         refreshControl={
                             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={primaryColor} />
                         }

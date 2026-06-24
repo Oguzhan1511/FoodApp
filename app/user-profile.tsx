@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -15,10 +16,14 @@ import {
     View,
     Linking,
     Modal,
+    FlatList,
+    TextInput,
+    KeyboardAvoidingView,
+    Platform,
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 const { width } = Dimensions.get('window');
 const THEME_COLOR = '#800020';
@@ -45,14 +50,67 @@ export default function UserProfileScreen() {
     const [relationship, setRelationship] = useState<'none' | 'following' | 'friend' | 'pending'>('none');
     const [posts, setPosts] = useState<any[]>([]);
     const [showRemoveFollowerModal, setShowRemoveFollowerModal] = useState(false);
+    const [showMenuModal, setShowMenuModal] = useState(false);
+    const [menuImages, setMenuImages] = useState<string[]>([]);
+    const [activeMenuIndex, setActiveMenuIndex] = useState(0);
+    const [featuredBadges, setFeaturedBadges] = useState<string[]>([]);
+    const [showRatingModal, setShowRatingModal] = useState(false);
+    const [ratingValue, setRatingValue] = useState(0);
+    const [ratingComment, setRatingComment] = useState('');
+    const [isEligibleToRate, setIsEligibleToRate] = useState(false);
+    const [submittingRating, setSubmittingRating] = useState(false);
+    const [activeTab, setActiveTab] = useState(0);
+
+    const allBadges = [
+        { id: 'first_log', name: 'İlk Adım', icon: 'footsteps', color: '#4CAF50', desc: 'İlk besin kaydını tamamladın!' },
+        { id: 'water_master', name: 'Su Ejderhası', icon: 'water', color: '#2196F3', desc: 'Günlük su hedefini 2L üzerine çıkardın.' },
+        { id: 'streak_3', name: '3 Günlük Seri', icon: 'flame', color: '#FF5722', desc: 'Üst üste 3 gün kayıt yaparak kazanılır.' },
+        { id: 'early_bird', name: 'Erkenci Kuş', icon: 'sunny', color: '#FFC107', desc: 'Sabah 09:00 öncesi kahvaltı kaydı yaparak kazanılır.' },
+        { id: 'macro_hero', name: 'Makro Kahramanı', icon: 'medal', color: '#9C27B0', desc: 'Tüm makro hedeflerine tam isabet tutturunca kazanılır.' }
+    ];
 
     useEffect(() => {
         if (userId) {
             fetchProfile();
             fetchUserPosts();
             fetchStats();
+            loadFeaturedBadges();
+            if (userId !== currentUser?.id) {
+                checkEligibility();
+            }
         }
     }, [userId]);
+
+    const checkEligibility = async () => {
+        if (!currentUser || !userId) return;
+        try {
+            // Check if there is a message starting with DIET_PLAN::: from dietitian to user
+            const { data, error } = await supabase
+                .from('messages')
+                .select('id')
+                .eq('sender_id', userId) // dietitian
+                .eq('receiver_id', currentUser.id)
+                .ilike('content', 'DIET_PLAN:::%')
+                .limit(1);
+            
+            if (data && data.length > 0) {
+                setIsEligibleToRate(true);
+            } else {
+                // Also check if user is the dietitian themselves
+                setIsEligibleToRate(false);
+            }
+        } catch (e) {
+            console.error("Eligibility check error:", e);
+        }
+    };
+
+    const loadFeaturedBadges = async () => {
+        try {
+            const stored = await AsyncStorage.getItem(`featuredBadges_${userId}`);
+            if (stored) setFeaturedBadges(JSON.parse(stored));
+            else setFeaturedBadges([]);
+        } catch (e) { console.error(e); }
+    };
 
     useEffect(() => {
         if (userId && profile) {
@@ -102,6 +160,46 @@ export default function UserProfileScreen() {
         }
     }, [profile]);
 
+    const fetchMenuImage = async (freshBusinessData?: any) => {
+        const bizData = freshBusinessData || profile?.businessData;
+        const menuUrlRaw = bizData?.menu_url;
+        
+        console.log("--- Menu Fetch Start ---");
+        console.log("Raw Menu Data from DB:", menuUrlRaw);
+        
+        if (!menuUrlRaw) {
+            setMenuImages([]);
+            return;
+        }
+
+        try {
+            // Eğer veri JSON formatındaysa (yeni çoklu yapı)
+            if (typeof menuUrlRaw === 'string' && menuUrlRaw.startsWith('[')) {
+                const urls = JSON.parse(menuUrlRaw);
+                setMenuImages(urls);
+            } else {
+                // Eski tekli yapı ise
+                setMenuImages([menuUrlRaw]);
+            }
+        } catch (e) {
+            console.log("Menu parse error, using as single:", e);
+            setMenuImages([menuUrlRaw]);
+        }
+    };
+
+    useEffect(() => {
+        if (showMenuModal) {
+            console.log("Menu modal opened, refreshing profile...");
+            fetchProfile().then((freshProfile) => {
+                if (freshProfile?.businessData) {
+                    fetchMenuImage(freshProfile.businessData);
+                } else {
+                    fetchMenuImage();
+                }
+            });
+        }
+    }, [showMenuModal]);
+
     const fetchProfile = async () => {
         try {
             setLoading(true);
@@ -114,7 +212,34 @@ export default function UserProfileScreen() {
                 .single();
 
             if (dietitian) {
-                setProfile({ ...dietitian, role: 'dietitian' });
+                // Puanlama verilerini çek
+                const { data: ratingsData } = await supabase
+                    .from('dietitian_ratings')
+                    .select('rating')
+                    .eq('dietitian_id', userId);
+                
+                const count = ratingsData?.length || 0;
+                const avg = count > 0 
+                    ? (ratingsData!.reduce((sum, r) => sum + r.rating, 0) / count).toFixed(1) 
+                    : '5.0';
+
+                const newProfile = { 
+                    ...dietitian, 
+                    role: 'dietitian',
+                    average_rating: avg,
+                    rating_count: count
+                };
+
+                // Sponsorluysa gösterimi artır
+                if (userId !== currentUser?.id && dietitian.is_sponsored) {
+                    supabase.from('dietitians')
+                        .update({ sponsor_views: (dietitian.sponsor_views || 0) + 1 })
+                        .eq('id', userId)
+                        .then();
+                }
+
+                setProfile(newProfile);
+                return newProfile;
             } else {
                 // 2. Try regular profile
                 const { data: userData } = await supabase
@@ -129,13 +254,24 @@ export default function UserProfileScreen() {
                         const { data: bData } = await supabase.from('business_profiles').select('*').eq('id', userId).maybeSingle();
                         if (bData) businessData = bData;
                     }
-                    setProfile({ ...userData, role: 'user', businessData });
+                    const newProfile = { ...userData, role: 'user', businessData };
+
+                    // Sponsorluysa gösterimi artır
+                    if (userId !== currentUser?.id && userData.is_sponsored) {
+                        supabase.from('profiles')
+                            .update({ sponsor_views: (userData.sponsor_views || 0) + 1 })
+                            .eq('id', userId)
+                            .then();
+                    }
+
+                    setProfile(newProfile);
+                    return newProfile;
                 }
             }
+            return null;
         } catch (error) {
             console.log("Profile error:", error);
-            Alert.alert("Hata", "Kullanıcı bulunamadı.");
-            router.back();
+            return null;
         } finally {
             setLoading(false);
         }
@@ -354,6 +490,37 @@ export default function UserProfileScreen() {
         }
     };
 
+    const submitRating = async () => {
+        if (ratingValue === 0) {
+            Alert.alert("Uyarı", "Lütfen bir puan seçin.");
+            return;
+        }
+        
+        setSubmittingRating(true);
+        try {
+            const { error } = await supabase.from('dietitian_ratings').upsert({
+                dietitian_id: userId,
+                user_id: currentUser?.id,
+                rating: ratingValue,
+                created_at: new Date().toISOString()
+            }, { 
+                onConflict: 'user_id,dietitian_id' 
+            });
+
+            if (error) throw error;
+
+            Alert.alert("Başarılı", "Değerlendirmeniz iletildi.");
+            setShowRatingModal(false);
+            setRatingValue(0);
+            fetchProfile(); // Verileri anlık güncelle
+        } catch (e: any) {
+            console.error("Rating error:", e);
+            Alert.alert("Hata", "Puan kaydedilirken bir sorun oluştu.");
+        } finally {
+            setSubmittingRating(false);
+        }
+    };
+
     if (loading) {
         return (
             <View style={[styles.container, styles.centerContent]}>
@@ -394,36 +561,45 @@ export default function UserProfileScreen() {
         return relationship === 'none' ? '#fff' : '#333';
     };
 
-    const handleStatPress = (type: 'followers' | 'following') => {
-        const canView = profile?.role === 'dietitian' || relationship === 'friend';
+    const isPrivateHidden = profile?.is_private && relationship !== 'following' && relationship !== 'friend' && profile?.role !== 'dietitian';
 
-        if (canView) {
+    const handleStatPress = (type: 'followers' | 'following') => {
+        // Gizli değilse veya takip ediyorsak görebiliriz
+        const canView = !isPrivateHidden || (relationship as string) === 'friend' || (relationship as string) === 'following' || profile?.role === 'dietitian';
+
+        if (canView && userId) {
             router.push({
-                pathname: '/follow-list',
+                pathname: '/follow-list' as any,
                 params: { type, userId: userId }
             });
-        } else {
-            Alert.alert("Gizli Profil", "Takipçileri görmek için arkadaş olmalısınız.");
+        } else if (!canView) {
+            Alert.alert("Gizli Profil", "Takipçileri görmek için bu kullanıcıyı takip etmelisiniz.");
         }
     };
 
-    return (
-        <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
-            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-
-            <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor }]}>
-                <TouchableOpacity onPress={() => router.back()}>
-                    <Ionicons name="arrow-back" size={26} color={primaryColor} />
-                </TouchableOpacity>
-                <Text style={[styles.headerUsername, { color: textColor }]}>
-                    {userId === currentUser?.id ? 'Senin Profilin' : (profile?.username ? profile.username.replace(/^@/, '') : 'Profil')}
-                </Text>
-                <View style={{ width: 26 }} />
+    const renderEmpty = () => {
+        if (isPrivateHidden) {
+            return (
+                <View style={styles.privateProfileContainer}>
+                    <Ionicons name="lock-closed-outline" size={50} color={subTextColor} />
+                    <Text style={[styles.privateProfileText, { color: textColor }]}>Bu hesap gizli</Text>
+                    <Text style={[styles.privateProfileSubText, { color: subTextColor }]}>
+                        Fotoğraflarını ve videolarını görmek için bu hesabı takip et.
+                    </Text>
+                </View>
+            );
+        }
+        return (
+            <View style={styles.emptyContainer}>
+                <Text style={[styles.emptyText, { color: subTextColor }]}>Henüz gönderi yok.</Text>
             </View>
+        );
+    };
 
-            <ScrollView showsVerticalScrollIndicator={false} style={{ backgroundColor: bgColor }}>
-                <View style={[styles.profileInfoContainer, { backgroundColor: bgColor }]}>
-                    <Image
+    const renderHeader = () => (
+        <View style={{ backgroundColor: bgColor }}>
+            <View style={[styles.profileInfoContainer, { backgroundColor: bgColor }]}>
+                <Image
                         source={imageSource}
                         style={styles.avatar}
                         contentFit="cover"
@@ -449,17 +625,82 @@ export default function UserProfileScreen() {
                 </View>
 
                 <View style={styles.bioContainer}>
-                    <Text style={[styles.fullName, { color: textColor }]}>
-                        {userId === currentUser?.id ? `${currentUser?.ad} ${currentUser?.soyad}` : `${profile?.ad || profile?.first_name || ''} ${profile?.soyad || profile?.last_name || ''}`.trim()}
-                    </Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={[styles.fullName, { color: textColor }]}>
+                                {userId === currentUser?.id ? `${currentUser?.ad} ${currentUser?.soyad}` : `${profile?.ad || profile?.first_name || ''} ${profile?.soyad || profile?.last_name || ''}`.trim()}
+                            </Text>
+                            {profile?.role === 'dietitian' && (
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 193, 7, 0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                                    <Ionicons name="star" size={14} color="#FFC107" />
+                                    <Text style={{ marginLeft: 4, fontSize: 13, fontWeight: 'bold', color: '#FFC107' }}>
+                                        {profile?.average_rating || '5.0'} ({profile?.rating_count || 0} değerlendirme)
+                                    </Text>
+                                </View>
+                                </View>
+                            )}
+                        </View>
+                        
+                        {profile?.role === 'dietitian' && userId !== currentUser?.id && (
+                            <TouchableOpacity 
+                                style={{ padding: 8, alignItems: 'center', justifyContent: 'center' }}
+                                onPress={() => setShowRatingModal(true)}
+                            >
+                                <Ionicons name="star-outline" size={22} color={primaryColor} />
+                                <Text style={{ fontSize: 9, color: primaryColor, textAlign: 'center', marginTop: 2, fontWeight: '600' }}>Puan Ver</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+
                     {profile?.role === 'dietitian' ? (
-                        <View>
-                            <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.location}</Text>
-                            <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.specialty} | {profile?.experience} yıl</Text>
-                            <Text style={[styles.bioText, { color: subTextColor, marginTop: 5 }]}>{profile?.bio}</Text>
+                        <View style={{ marginTop: 10 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                                <Ionicons name="location-outline" size={14} color={subTextColor} style={{ marginRight: 4 }} />
+                                <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.location}</Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                                <Ionicons name="medal-outline" size={14} color={subTextColor} style={{ marginRight: 4 }} />
+                                <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.specialty} | {profile?.experience} yıl tecrübe</Text>
+                            </View>
+                            <Text style={[styles.bioText, { color: textColor, marginTop: 4, lineHeight: 20 }]}>{profile?.bio}</Text>
                         </View>
                     ) : (
-                        <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.bio || 'Henüz biyografi eklenmemiş.'}</Text>
+                        <View>
+                            <Text style={[styles.bioText, { color: subTextColor }]}>{profile?.bio || 'Henüz biyografi eklenmemiş.'}</Text>
+                            
+                            {/* ROZETLER / BAŞARILAR VİTRİNİ */}
+                            {featuredBadges.length > 0 ? (
+                                <View style={styles.badgesContainer}>
+                                    <Text style={[styles.sectionTitle, { color: textColor }]}>Öne Çıkan Başarılar</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.badgesScroll}>
+                                        {allBadges.filter(b => featuredBadges.includes(b.id)).map((badge) => (
+                                            <TouchableOpacity 
+                                                key={badge.id} 
+                                                style={styles.badgeItem}
+                                                onPress={() => Alert.alert(badge.name, badge.desc)}
+                                            >
+                                                <View style={[styles.badgeIconBg, { backgroundColor: badge.color + '20' }]}>
+                                                    <Ionicons name={badge.icon as any} size={24} color={badge.color} />
+                                                </View>
+                                                <Text style={[styles.badgeLabel, { color: subTextColor }]}>{badge.name}</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+                                </View>
+                            ) : (
+                                userId === currentUser?.id && (
+                                    <TouchableOpacity 
+                                        style={[styles.badgesContainer, { alignItems: 'center', paddingVertical: 10 }]}
+                                        onPress={() => router.push('/tracking' as any)}
+                                    >
+                                        <Text style={{ color: subTextColor, fontSize: 12, fontStyle: 'italic' }}>
+                                            Henüz bir başarı sergilemedin. Takip sayfasından ekleyebilirsin.
+                                        </Text>
+                                    </TouchableOpacity>
+                                )
+                            )}
+                        </View>
                     )}
                 </View>
 
@@ -477,10 +718,10 @@ export default function UserProfileScreen() {
                             <Ionicons name="location-outline" size={18} color={primaryColor} />
                             <Text style={[styles.businessButtonText, { color: textColor }]}>Yol Tarifi</Text>
                         </TouchableOpacity>
+                        
                         <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => {
                             const phone = profile?.businessData?.phone_number;
                             if (phone) {
-                                // Sometimes phones need cleaning but let's just pass it
                                 Linking.openURL(`tel:${phone}`).catch(() => Alert.alert('Hata', 'Arama başlatılamadı.'));
                             } else {
                                 Alert.alert('Bilgi', 'İşletme henüz iletişim numarası girmemiş.');
@@ -489,6 +730,13 @@ export default function UserProfileScreen() {
                             <Ionicons name="call-outline" size={18} color={primaryColor} />
                             <Text style={[styles.businessButtonText, { color: textColor }]}>İletişim</Text>
                         </TouchableOpacity>
+
+                        {profile?.businessData?.menu_url && (
+                            <TouchableOpacity style={[styles.businessButton, { backgroundColor: isDark ? '#1a1a1a' : '#fafafa', borderColor: borderColor }]} onPress={() => setShowMenuModal(true)}>
+                                <Ionicons name="restaurant-outline" size={18} color={primaryColor} />
+                                <Text style={[styles.businessButtonText, { color: textColor }]}>Menü</Text>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 )}
 
@@ -504,42 +752,141 @@ export default function UserProfileScreen() {
                     {(relationship === 'friend' || relationship === 'following') && (
                         <TouchableOpacity
                             style={[styles.messageButton, { borderColor: borderColor }]}
-                            onPress={() => router.push({ pathname: '/chat', params: { userId: userId, username: profile?.username } })}
+                            onPress={() => router.push({ pathname: '/chat' as any, params: { userId: userId, username: profile?.username } })}
                         >
                             <Text style={[styles.messageButtonText, { color: textColor }]}>Mesaj</Text>
                         </TouchableOpacity>
                     )}
                 </View>
 
-                <View style={styles.postsGrid}>
-                    {/* Gizli Profil Logic */}
-                    {(profile?.is_private && relationship !== 'following' && relationship !== 'friend' && profile?.role !== 'dietitian') ? (
-                        <View style={styles.privateProfileContainer}>
-                            <Ionicons name="lock-closed-outline" size={50} color={subTextColor} />
-                            <Text style={[styles.privateProfileText, { color: textColor }]}>Bu hesap gizli</Text>
-                            <Text style={[styles.privateProfileSubText, { color: subTextColor }]}>
-                                Fotoğraflarını ve videolarını görmek için bu hesabı takip et.
-                            </Text>
-                        </View>
-                    ) : (
-                        posts.length === 0 ? (
-                            <View style={styles.emptyContainer}>
-                                <Text style={[styles.emptyText, { color: subTextColor }]}>Henüz gönderi yok.</Text>
-                            </View>
-                        ) : (
-                            posts.map((post) => (
-                                <TouchableOpacity
-                                    key={post.id}
-                                    style={styles.gridItem}
-                                    onPress={() => router.push({ pathname: "/post-detail", params: { postId: post.id } })}
-                                >
-                                    <Image source={{ uri: post.image_url }} style={styles.gridImage} contentFit="cover" />
-                                </TouchableOpacity>
-                            ))
-                        )
-                    )}
+                {/* TAB SWITCHER */}
+                <View style={[styles.tabContainer, { borderTopColor: borderColor }]}>
+                    <TouchableOpacity
+                        style={[styles.tabButton, activeTab === 0 && styles.activeTab]}
+                        onPress={() => setActiveTab(0)}
+                    >
+                        <Ionicons name="grid-outline" size={24} color={activeTab === 0 ? primaryColor : subTextColor} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.tabButton, activeTab === 1 && styles.activeTab]}
+                        onPress={() => setActiveTab(1)}
+                    >
+                        <Ionicons name="restaurant-outline" size={26} color={activeTab === 1 ? primaryColor : subTextColor} />
+                    </TouchableOpacity>
                 </View>
-            </ScrollView>
+        </View>
+    );
+
+    const filteredData = activeTab === 0 
+        ? posts.filter(p => !p.is_recipe) 
+        : posts.filter(p => p.is_recipe);
+
+    const listData = isPrivateHidden ? [] : filteredData;
+
+    return (
+        <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
+            <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
+
+            <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor }]}>
+                <TouchableOpacity onPress={() => router.back()}>
+                    <Ionicons name="arrow-back" size={26} color={primaryColor} />
+                </TouchableOpacity>
+                <Text style={[styles.headerUsername, { color: textColor }]}>
+                    {userId === currentUser?.id ? 'Senin Profilin' : (profile?.username ? profile.username.replace(/^@/, '') : 'Profil')}
+                </Text>
+                <View style={{ width: 26 }} />
+            </View>
+
+            <FlatList
+                data={listData}
+                keyExtractor={(item) => item.id}
+                numColumns={3}
+                key={activeTab} // To handle column changes if any
+                renderItem={({ item }) => (
+                    <TouchableOpacity
+                        style={[styles.gridItem, { backgroundColor: isDark ? '#1a1a1a' : '#f0f0f0' }]}
+                        onPress={() => {
+                            const pathname = item.is_recipe ? '/recipe-detail' : '/post-detail';
+                            const params = item.is_recipe ? { recipeId: item.id, filterUserId: userId } : { postId: item.id, filterUserId: userId };
+                            router.push({ pathname: pathname as any, params });
+                        }}
+                    >
+                        <Image 
+                          source={{ uri: item.image_url?.split(',')[0] }} 
+                          style={styles.gridImage} 
+                          contentFit="cover" 
+                          transition={200} 
+                        />
+                        {item.image_url?.includes(',') && (
+                            <View style={styles.multiImageIndicator}>
+                                <Ionicons name="copy" size={14} color="#fff" />
+                            </View>
+                        )}
+                        {item.is_recipe && (
+                            <View style={styles.recipeIndicator}>
+                                <Ionicons name="restaurant" size={16} color="#fff" />
+                            </View>
+                        )}
+                        {!item.image_url && (
+                          <View style={styles.placeholderContainerSmall}>
+                            <Ionicons name="image-outline" size={24} color={subTextColor} />
+                          </View>
+                        )}
+                    </TouchableOpacity>
+                )}
+                ListHeaderComponent={renderHeader}
+                ListEmptyComponent={renderEmpty}
+                showsVerticalScrollIndicator={false}
+                initialNumToRender={12}
+                maxToRenderPerBatch={12}
+                windowSize={5}
+                removeClippedSubviews={true}
+            />
+
+            <Modal
+                visible={showRatingModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowRatingModal(false)}
+            >
+                <KeyboardAvoidingView 
+                    behavior={Platform.OS === "ios" ? "padding" : "height"}
+                    style={styles.modalOverlay}
+                >
+                    <View style={[styles.ratingContainer, { backgroundColor: bgColor }]}>
+                        <View style={styles.sheetHeader}>
+                            <Text style={[styles.sheetTitle, { color: textColor }]}>Diyetisyeni Değerlendir</Text>
+                            <TouchableOpacity onPress={() => setShowRatingModal(false)}>
+                                <Ionicons name="close" size={24} color={textColor} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.starsRow}>
+                            {[1, 2, 3, 4, 5].map((star) => (
+                                <TouchableOpacity key={star} onPress={() => setRatingValue(star)}>
+                                    <Ionicons 
+                                        name={ratingValue >= star ? "star" : "star-outline"} 
+                                        size={40} 
+                                        color={ratingValue >= star ? "#FFC107" : subTextColor} 
+                                    />
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+
+                        <TouchableOpacity 
+                            style={[styles.submitRatingButton, { backgroundColor: primaryColor, marginTop: 10 }]} 
+                            onPress={submitRating}
+                            disabled={submittingRating || ratingValue === 0}
+                        >
+                            {submittingRating ? (
+                                <ActivityIndicator color="#fff" />
+                            ) : (
+                                <Text style={styles.submitRatingText}>Puanı Gönder</Text>
+                            )}
+                        </TouchableOpacity>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
 
             {/* Remove Follower Modal */}
             <Modal
@@ -562,6 +909,60 @@ export default function UserProfileScreen() {
                         </TouchableOpacity>
                     </View>
                 </View>
+            </Modal>
+
+            {/* Menu Modal */}
+            <Modal
+                visible={showMenuModal}
+                transparent={false}
+                animationType="fade"
+                onRequestClose={() => setShowMenuModal(false)}
+            >
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+                    <View style={styles.modalHeader}>
+                        <TouchableOpacity onPress={() => setShowMenuModal(false)} style={styles.modalCloseButton}>
+                            <Ionicons name="close" size={30} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.modalTitle}>
+                            İşletme Menüsü {menuImages.length > 1 ? `(${activeMenuIndex + 1}/${menuImages.length})` : ''}
+                        </Text>
+                        <View style={{ width: 30 }} />
+                    </View>
+                    
+                    {menuImages.length > 0 ? (
+                        <FlatList
+                            data={menuImages}
+                            horizontal
+                            pagingEnabled
+                            showsHorizontalScrollIndicator={false}
+                            onMomentumScrollEnd={(e) => {
+                                const index = Math.round(e.nativeEvent.contentOffset.x / width);
+                                setActiveMenuIndex(index);
+                            }}
+                            keyExtractor={(item, index) => index.toString()}
+                            renderItem={({ item }) => (
+                                <ScrollView 
+                                    contentContainerStyle={{ width: width, justifyContent: 'center' }} 
+                                    minimumZoomScale={1} 
+                                    maximumZoomScale={3}
+                                >
+                                    <Image
+                                        source={{ uri: item }}
+                                        style={{ width: width, height: width * 1.5, alignSelf: 'center' }}
+                                        contentFit="contain"
+                                        cachePolicy="none"
+                                        onError={(e) => console.log("Menu image render error:", e)}
+                                    />
+                                </ScrollView>
+                            )}
+                        />
+                    ) : (
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                            <ActivityIndicator size="large" color="#fff" />
+                            <Text style={{ color: '#fff', marginTop: 10 }}>Menü yükleniyor...</Text>
+                        </View>
+                    )}
+                </SafeAreaView>
             </Modal>
         </SafeAreaView>
     );
@@ -589,7 +990,7 @@ const styles = StyleSheet.create({
     bioContainer: { paddingHorizontal: 20, marginTop: 5 },
     fullName: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 4 },
     bioText: { fontSize: 14, color: '#444', lineHeight: 20 },
-    actionButtons: { paddingHorizontal: 20, marginTop: 15 },
+    actionButtons: { paddingHorizontal: 20, marginTop: 15, marginBottom: 20 },
     followButton: { backgroundColor: THEME_COLOR, padding: 12, borderRadius: 10, alignItems: 'center' },
     followButtonText: { fontWeight: 'bold', color: '#fff' },
     businessButtonsContainer: {
@@ -629,6 +1030,11 @@ const styles = StyleSheet.create({
     gridImage: {
         width: '100%',
         height: '100%',
+    },
+    placeholderContainerSmall: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
     privateIconContainer: {
         width: 100,
@@ -682,11 +1088,141 @@ const styles = StyleSheet.create({
         marginTop: 5,
         textAlign: 'center',
     },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    bottomSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40, borderTopWidth: 1, borderColor: '#333' },
+    modalOverlay: { 
+        flex: 1, 
+        backgroundColor: 'rgba(0,0,0,0.6)', 
+        justifyContent: 'center', 
+        alignItems: 'center' 
+    },
+    bottomSheet: { 
+        width: '100%',
+        backgroundColor: '#fff',
+        borderTopLeftRadius: 25, 
+        borderTopRightRadius: 25, 
+        padding: 20, 
+        paddingBottom: 40, 
+    },
     sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
     sheetTitle: { fontSize: 18, fontWeight: 'bold' },
     sheetMessage: { fontSize: 14, marginBottom: 20, lineHeight: 20 },
     removeButton: { padding: 15, borderRadius: 10, alignItems: 'center' },
-    removeButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
+    removeButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+    // Badge Styles
+    badgesContainer: {
+        marginTop: 15,
+        paddingTop: 15,
+        borderTopWidth: 0.5,
+        borderTopColor: '#f0f0f0',
+    },
+    sectionTitle: {
+        fontSize: 14,
+        fontWeight: 'bold',
+        marginBottom: 10,
+    },
+    badgesScroll: {
+        flexDirection: 'row',
+    },
+    badgeItem: {
+        alignItems: 'center',
+        marginRight: 20,
+        width: 70,
+    },
+    badgeIconBg: {
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 6,
+    },
+    badgeLabel: {
+        fontSize: 10,
+        fontWeight: '600',
+        textAlign: 'center',
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 20,
+        paddingVertical: 15,
+        backgroundColor: '#000'
+    },
+    modalCloseButton: {
+        padding: 5
+    },
+    modalTitle: {
+        color: '#fff',
+        fontSize: 18,
+        fontWeight: 'bold'
+    },
+    // RATING MODAL STYLES
+    ratingContainer: {
+        width: '92%',
+        padding: 25,
+        borderRadius: 24,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.3,
+        shadowRadius: 20,
+        elevation: 10,
+    },
+    starsRow: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        gap: 10,
+        marginVertical: 20,
+    },
+    commentInput: {
+        width: '100%',
+        height: 100,
+        borderRadius: 12,
+        padding: 15,
+        fontSize: 14,
+        textAlignVertical: 'top',
+        borderWidth: 1,
+        marginBottom: 20,
+    },
+    submitRatingButton: {
+        width: '100%',
+        padding: 15,
+        borderRadius: 12,
+        alignItems: 'center',
+    },
+    submitRatingText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 16,
+    },
+    recipeIndicator: {
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        padding: 4,
+        borderRadius: 4,
+    },
+    multiImageIndicator: {
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        padding: 4,
+        borderRadius: 4,
+    },
+    tabContainer: {
+        flexDirection: 'row',
+        marginTop: 10,
+        borderTopWidth: 0.5,
+    },
+    tabButton: {
+        flex: 1,
+        alignItems: 'center',
+        paddingVertical: 12,
+    },
+    activeTab: {
+        borderBottomWidth: 2,
+        borderBottomColor: THEME_COLOR,
+    },
 });

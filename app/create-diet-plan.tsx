@@ -12,7 +12,7 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useTheme } from './ThemeContext'; // Ensure correct path
+import { useTheme } from '../context/ThemeContext'; // Ensure correct path
 
 type DietPlan = {
     [day: string]: {
@@ -67,7 +67,7 @@ export default function CreateDietPlanScreen() {
 
             // Navigate back to Chat with the plan data
             router.replace({
-                pathname: '/chat',
+                pathname: '/chat' as any,
                 params: {
                     userId: userId,
                     dietPlanData: planString

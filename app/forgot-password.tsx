@@ -13,8 +13,8 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-import { auth } from './services/firebaseConfig';
-import { useTheme } from './ThemeContext';
+import { auth } from '../services/firebaseConfig';
+import { useTheme } from '../context/ThemeContext';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();

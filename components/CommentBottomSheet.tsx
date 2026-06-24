@@ -17,9 +17,9 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
-import { useAuth } from '../app/AuthContext';
-import { supabase } from '../app/services/supabaseConfig';
-import { useTheme } from '../app/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { supabase } from '../services/supabaseConfig';
+import { useTheme } from '../context/ThemeContext';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 

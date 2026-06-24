@@ -13,10 +13,13 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
+import * as ScreenCapture from 'expo-screen-capture';
 
 export default function DietPlanDetailScreen() {
+    ScreenCapture.usePreventScreenCapture();
     const router = useRouter();
     const params = useLocalSearchParams();
     const { user } = useAuth();
@@ -33,9 +36,10 @@ export default function DietPlanDetailScreen() {
 
     const [plan, setPlan] = useState<any>(null);
     const [progress, setProgress] = useState<any>({});
-    const [planId, setPlanId] = useState<string | null>(null); // Keep track of DB ID
+    const [planId, setPlanId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [isPreview, setIsPreview] = useState(false);
+    const [isExpired, setIsExpired] = useState(false);
 
     // Note Modal State
     const [modalVisible, setModalVisible] = useState(false);
@@ -51,29 +55,48 @@ export default function DietPlanDetailScreen() {
     const loadData = async () => {
         if (!user) return;
         try {
-            // If passed via params (Preview Mode)
+            // 1. If passed via params (Preview Mode from Dietitian) - ALWAYS ALLOW PREVIEW
             if (params.planData) {
-                // Alert.alert("Debug", `Param received: ${params.planData.length} chars`);
                 setPlan(JSON.parse(params.planData as string));
-
                 if (params.progressData) {
                     setProgress(JSON.parse(params.progressData as string));
                 }
-
                 setIsPreview(true);
                 setLoading(false);
                 return;
-            } else {
-                // Alert.alert("Debug", "No params received");
             }
 
+            // 2. Check from Supabase for expiration (User's actual plan)
+            const { data: dbPlan, error: dbError } = await supabase
+                .from('diet_plans')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('created_at', { ascending: false })
+                .limit(1);
+
+            if (dbPlan && dbPlan.length > 0) {
+                const latestPlan = dbPlan[0];
+                const createdAt = new Date(latestPlan.created_at);
+                const now = new Date();
+                const diffTime = Math.abs(now.getTime() - createdAt.getTime());
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                if (diffDays > 7) {
+                    setIsExpired(true);
+                    setPlan(latestPlan.plan_data);
+                    setLoading(false);
+                    return;
+                }
+            }
+
+            // Fallback to local storage
             const planJson = await AsyncStorage.getItem(`currentDietPlan_${user.id}`);
             const progressJson = await AsyncStorage.getItem(`dietPlanProgress_${user.id}`);
 
             if (planJson) setPlan(JSON.parse(planJson));
             if (progressJson) setProgress(JSON.parse(progressJson));
         } catch (e) {
-            Alert.alert("Hata", "Veriler yüklenemedi.");
+            console.log("Load Data Error:", e);
         } finally {
             setLoading(false);
         }
@@ -104,6 +127,29 @@ export default function DietPlanDetailScreen() {
     };
 
     if (loading) return <View style={[styles.container, { backgroundColor: bgColor }]} />;
+
+    if (isExpired) {
+        return (
+            <SafeAreaView style={[styles.container, { backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center', padding: 20 }]}>
+                <Ionicons name="lock-closed-outline" size={80} color={primaryColor} />
+                <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 20, textAlign: 'center' }}>Program Süreniz Doldu</Text>
+                <Text style={{ color: subTextColor, marginTop: 15, textAlign: 'center', lineHeight: 22 }}>
+                    Bu diyet programının 7 günlük kullanım süresi tamamlanmıştır. Yeni bir liste alarak hedeflerinize devam edebilirsiniz.
+                </Text>
+                
+                <TouchableOpacity 
+                    onPress={() => router.replace('/(tabs)/dietitian' as any)} 
+                    style={{ marginTop: 40, backgroundColor: primaryColor, paddingVertical: 15, paddingHorizontal: 30, borderRadius: 12, width: '100%', alignItems: 'center' }}
+                >
+                    <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Yeni Liste Al</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 20 }}>
+                    <Text style={{ color: subTextColor }}>Geri Dön</Text>
+                </TouchableOpacity>
+            </SafeAreaView>
+        );
+    }
 
     if (!plan) {
         return (

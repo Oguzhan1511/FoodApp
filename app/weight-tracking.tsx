@@ -12,9 +12,9 @@ import {
     View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAuth } from './AuthContext';
-import { supabase } from './services/supabaseConfig';
-import { useTheme } from './ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { supabase } from '../services/supabaseConfig';
+import { useTheme } from '../context/ThemeContext';
 
 export default function WeightTrackingScreen() {
     const router = useRouter();

@@ -8,7 +8,7 @@ import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Linking, Modal, Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -16,16 +16,16 @@ import {
   View
 } from 'react-native';
 
-import { auth } from './services/firebaseConfig';
-import { supabase } from './services/supabaseConfig';
+import { auth } from '../services/firebaseConfig';
+import { supabase } from '../services/supabaseConfig';
 
 import { Ionicons } from '@expo/vector-icons';
 import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -36,25 +36,13 @@ export default function RegisterScreen() {
   const [role, setRole] = useState<'user' | 'dietitian'>('user');
   const [accountType, setAccountType] = useState<'personal' | 'business'>('personal');
   const [loading, setLoading] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const router = useRouter();
   const { login } = useAuth();
   const { theme } = useTheme();
 
   const isDark = theme === 'dark';
-
-  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    androidClientId: 'GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
-    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
-    webClientId: 'GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com', // Yeni Web ID buraya gelecek
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleLogin(response.params.id_token);
-    } else if (response?.type === 'error') {
-      console.error("Google Auth Hatası:", response.error);
-    }
-  }, [response]);
 
   const handleGoogleLogin = async (idToken: string) => {
     setLoading(true);
@@ -63,7 +51,8 @@ export default function RegisterScreen() {
       const userCredential = await signInWithCredential(auth, credential);
       const user = userCredential.user;
 
-      const { data: profile } = await supabase
+      // 1. Supabase Profilini Kontrol Et
+      let { data: profile, error: fetchError } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.uid)
@@ -71,16 +60,28 @@ export default function RegisterScreen() {
 
       if (!profile) {
         const autoUsername = (user.email?.split('@')[0] || 'user') + Math.floor(Math.random() * 1000);
-        const { error: insertError } = await supabase
+        const { data: newProfile, error: insertError } = await supabase
           .from('profiles')
-          .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }]);
+          .insert([{ id: user.uid, email: user.email, username: autoUsername, role: 'user' }])
+          .select()
+          .single();
 
         if (insertError) throw insertError;
+        profile = newProfile;
       }
-      router.replace('/(tabs)/home');
+
+      // 2. AuthContext'e bildir
+      login({
+        id: user.uid,
+        username: profile?.username || (user.email?.split('@')[0] || 'user'),
+        avatar_url: user.photoURL,
+        role: profile?.role || 'user'
+      });
+
+      router.replace('/(tabs)/home' as any);
     } catch (err: any) {
       console.error("Google Login İşlem Hatası:", err.message);
-      Alert.alert("Ağ Hatası", "Supabase sunucusuna ulaşılamadı. İnternetinizi kontrol edin.");
+      Alert.alert("Hata", "Google ile giriş yapılırken bir hata oluştu: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -120,25 +121,34 @@ export default function RegisterScreen() {
         role: role
       });
 
-      if (role === 'user') router.replace('/onboarding');
-      else router.push({ pathname: "/DietitianDetailsScreen", params: { uid: firebaseUser.uid, email, username } });
+      if (role === 'user') router.replace('/onboarding' as any);
+      else router.push({ pathname: '/DietitianDetailsScreen' as any, params: { uid: firebaseUser.uid, email, username } });
 
     } catch (error: any) {
       console.error("Kayıt Hatası Detayı:", error);
-      console.error("Hata Kodu:", error.code);
-      console.error("Hata Mesajı:", error.message);
-
       let errorMessage = "Bir ağ hatası oluştu.";
       if (error.code === 'auth/email-already-in-use') errorMessage = "Bu e-posta adresi zaten kullanımda.";
       if (error.code === 'auth/invalid-email') errorMessage = "Geçersiz e-posta adresi.";
       if (error.code === 'auth/weak-password') errorMessage = "Şifre çok zayıf (en az 6 karakter olmalı).";
-      if (error.code === 'auth/operation-not-allowed') errorMessage = "E-posta/Şifre girişi Firebase panelinden aktif edilmemiş.";
 
       Alert.alert("Kayıt Başarısız", errorMessage);
     } finally {
       setLoading(false);
     }
   };
+
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    iosClientId: '223657657680-5mrcbn0gimnb3udt3156ov9p04o5ll04.apps.googleusercontent.com',
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  });
+
+  useEffect(() => {
+    if (response?.type === 'success') {
+      handleGoogleLogin(response.params.id_token);
+    } else if (response?.type === 'error') {
+      console.error("Google Auth Hatası:", response.error);
+    }
+  }, [response]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#000000' : '#FFFFFF' }]}>
@@ -147,7 +157,7 @@ export default function RegisterScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.flex}
       >
-        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.back()}
@@ -231,10 +241,35 @@ export default function RegisterScreen() {
               </TouchableOpacity>
             </View>
 
+            {/* Gizlilik Politikası Onay Checkbox */}
             <TouchableOpacity
-              style={[styles.button, styles.primaryButton, !isDark && styles.shadow, loading && { opacity: 0.7 }]}
+              style={styles.privacyRow}
+              onPress={() => setPrivacyAccepted(prev => !prev)}
+              activeOpacity={0.7}
+            >
+              <View style={[
+                styles.checkbox,
+                { borderColor: isDark ? '#555' : '#800020' },
+                privacyAccepted && { backgroundColor: '#800020', borderColor: '#800020' }
+              ]}>
+                {privacyAccepted && <Ionicons name="checkmark" size={14} color="#fff" />}
+              </View>
+              <Text style={[styles.privacyText, { color: isDark ? '#aaa' : '#555' }]}>
+                {'Okudum, '}
+                <Text
+                  style={[styles.privacyLink, { color: isDark ? '#ff6b8a' : '#800020' }]}
+                  onPress={() => setShowPrivacyModal(true)}
+                >
+                  Gizlilik Politikasını
+                </Text>
+                {' kabul ediyorum.'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.button, styles.primaryButton, !isDark && styles.shadow, (loading || !privacyAccepted) && { opacity: 0.5 }]}
               onPress={handleRegister}
-              disabled={loading}
+              disabled={loading || !privacyAccepted}
               activeOpacity={0.8}
             >
               {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Hesap Oluştur</Text>}
@@ -249,9 +284,16 @@ export default function RegisterScreen() {
             <TouchableOpacity
               style={[styles.googleBtn, {
                 backgroundColor: isDark ? '#111' : '#FFF',
-                borderColor: isDark ? '#333' : '#EEE'
+                borderColor: isDark ? '#333' : '#EEE',
+                opacity: (!request || loading || !privacyAccepted) ? 0.5 : 1
               }]}
-              onPress={() => promptAsync()}
+              onPress={() => {
+                if (!privacyAccepted) {
+                  Alert.alert('Gizlilik Politikası', 'Devam etmek için gizlilik politikasını kabul etmelisiniz.');
+                  return;
+                }
+                promptAsync();
+              }}
               disabled={!request || loading}
               activeOpacity={0.7}
             >
@@ -261,12 +303,44 @@ export default function RegisterScreen() {
 
             <View style={styles.footer}>
               <Text style={[styles.footerText, { color: isDark ? '#666' : '#999' }]}>Zaten hesabın var mı? </Text>
-              <TouchableOpacity onPress={() => router.push('/login')}>
+              <TouchableOpacity onPress={() => router.push('/login' as any)}>
                 <Text style={[styles.linkText, { color: isDark ? '#FFF' : '#800020' }]}>Giriş Yap</Text>
               </TouchableOpacity>
             </View>
           </View>
         </ScrollView>
+
+        <Modal
+          visible={showPrivacyModal}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setShowPrivacyModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContent, { backgroundColor: isDark ? '#111' : '#FFF' }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: isDark ? '#FFF' : '#1A1A1A' }]}>Gizlilik Politikası</Text>
+                <TouchableOpacity onPress={() => setShowPrivacyModal(false)}>
+                  <Ionicons name="close" size={24} color={isDark ? '#FFF' : '#333'} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+                <Text style={[styles.policyText, { color: isDark ? '#AAA' : '#444' }]}>
+                  {`FoodApp Gizlilik Politikası\n\nSon güncelleme: 30 Nisan 2025\n\n1. Topladığımız Veriler\n- Hesap Bilgileri: Ad, soyad, e-posta adresi.\n- Google ile Giriş: Sadece ad ve e-posta adresinizi alırız.\n- Sağlık Verileri: Girdiğiniz kalori ve besin değerleri sadece size özel saklanır.\n\n2. Verileri Nasıl Kullanırız\n- Hesabınızı yönetmek.\n- Diyetisyen iletişimini sağlamak.\n- Uygulama performansını iyileştirmek.\n\n3. Veri Güvenliği\nVerileriniz şifreli bağlantılar üzerinden iletilir ve endüstri standartlarında korunur.\n\n4. Haklarınız\nİstediğiniz zaman verilerinizin silinmesini talep edebilirsiniz.\n\nİletişim: oguzhan@gmail.com`}
+                </Text>
+              </ScrollView>
+              <TouchableOpacity 
+                style={[styles.modalButton, { backgroundColor: '#800020' }]}
+                onPress={() => {
+                  setPrivacyAccepted(true);
+                  setShowPrivacyModal(false);
+                }}
+              >
+                <Text style={styles.modalButtonText}>Okudum, Kabul Ediyorum</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -387,5 +461,76 @@ const styles = StyleSheet.create({
   linkText: {
     fontWeight: '700',
     fontSize: 15,
-  }
+  },
+  privacyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    marginTop: 4,
+    gap: 10,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  privacyText: {
+    fontSize: 13,
+    flex: 1,
+    lineHeight: 19,
+  },
+  privacyLink: {
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxHeight: '80%',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  modalBody: {
+    marginBottom: 20,
+  },
+  policyText: {
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  modalButton: {
+    height: 54,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
 });

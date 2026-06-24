@@ -11,9 +11,9 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 const THEME_COLOR = '#800020';
 
@@ -107,7 +107,7 @@ export default function GroupDetailScreen() {
 
     const handleAddMember = () => {
         router.push({
-            pathname: '/group-add-member',
+            pathname: '/group-add-member' as any,
             params: { groupId, groupName }
         });
     };
@@ -137,7 +137,7 @@ export default function GroupDetailScreen() {
             Alert.alert("Hata", "Gruptan ayrılınamadı: " + error.message);
         } else {
             Alert.alert("Bilgi", "Gruptan ayrıldınız. Sohbet geçmişini silmek için sohbet listesinde üzerine basılı tutabilirsiniz.");
-            router.navigate('/friends');
+            router.navigate('/friends' as any);
         }
     };
 

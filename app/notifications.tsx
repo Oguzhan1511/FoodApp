@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -15,9 +16,9 @@ import {
     View
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 export default function NotificationsScreen() {
     const router = useRouter();
@@ -31,29 +32,43 @@ export default function NotificationsScreen() {
     const borderColor = isDark ? '#333333' : '#f0f0f0';
     const primaryColor = isDark ? '#ff4d4d' : '#800020';
 
+    const [excludedIds, setExcludedIds] = useState<string[]>([]);
     const [notifications, setNotifications] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
 
     useEffect(() => {
+        loadExcludedIds();
         if (user) {
             fetchNotifications();
         }
     }, [user]);
+
+    const loadExcludedIds = async () => {
+        try {
+            const saved = await AsyncStorage.getItem(`excluded_notifs_${user?.id}`);
+            if (saved) setExcludedIds(JSON.parse(saved));
+        } catch (e) { console.error(e); }
+    };
+
+    const saveExcludedIds = async (ids: string[]) => {
+        try {
+            await AsyncStorage.setItem(`excluded_notifs_${user?.id}`, JSON.stringify(ids));
+        } catch (e) { console.error(e); }
+    };
 
     const fetchNotifications = async () => {
         try {
             setLoading(true);
             const { data, error } = await supabase
                 .from('notifications')
-                .select('*')
+                .select('id, user_id, actor_id, type, content, post_id, is_read, created_at')
                 .eq('user_id', user?.id)
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
 
             if (data && data.length > 0) {
-                // Enrich actor data
                 const actorIds = [...new Set(data.map(n => n.actor_id))];
 
                 const { data: profiles } = await supabase
@@ -70,11 +85,13 @@ export default function NotificationsScreen() {
                 profiles?.forEach(p => userMap[p.id] = p);
                 dietitians?.forEach(d => userMap[d.id] = { ...d, avatar_url: d.profile_picture });
 
-                const enriched = data.map(n => ({
-                    ...n,
-                    actor: userMap[n.actor_id]
-                }));
-                setNotifications(enriched);
+                setNotifications(data
+                    .map(n => ({
+                        ...n,
+                        actor: userMap[n.actor_id]
+                    }))
+                    .filter(n => !excludedIds.includes(n.id))
+                );
             } else {
                 setNotifications([]);
             }
@@ -122,9 +139,63 @@ export default function NotificationsScreen() {
         }
     };
 
+    const handleDeleteAllNotifications = async () => {
+        if (!notifications || notifications.length === 0) {
+            Alert.alert("Bilgi", "Silinecek bildirim bulunamadı.");
+            return;
+        }
+        
+        Alert.alert(
+            "Tümünü Sil",
+            "Veritabanındaki TÜM bildirimleriniz kalıcı olarak silinecek. Emin misiniz?",
+            [
+                { text: "Vazgeç", style: "cancel" },
+                { 
+                    text: "Evet, Hepsini Sil", 
+                    style: "destructive", 
+                    onPress: async () => {
+                        try {
+                            setLoading(true);
+                            const notifCount = notifications.length;
+
+                            // Tek seferde user_id ile sil
+                            const { error: bulkError, count } = await supabase
+                                .from('notifications')
+                                .delete({ count: 'exact' })
+                                .eq('user_id', user?.id);
+
+                            if (bulkError) throw bulkError;
+
+                            // Silme gerçekten oldu mu doğrula
+                            if (count === 0 && notifCount > 0) {
+                                // RLS engelliyor olabilir — tekil silmeyi dene
+                                const ids = notifications.map(n => n.id);
+                                for (const id of ids) {
+                                    await supabase.from('notifications').delete().eq('id', id);
+                                }
+                            }
+                            
+                            // Clear Local State & Storage
+                            await AsyncStorage.removeItem(`excluded_notifs_${user?.id}`);
+                            setExcludedIds([]);
+                            setNotifications([]);
+                            
+                            Alert.alert("Başarılı", `Bildirimler temizlendi.`);
+                        } catch (error: any) {
+                            console.error("Full Wipe Error:", error);
+                            setNotifications([]);
+                            Alert.alert("Hata", "Veritabanı silme işlemi başarısız oldu. Lütfen RLS ayarlarını kontrol edin.");
+                        } finally {
+                            setLoading(false);
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
     const handleFriendRequestAction = async (actorId: string, notificationId: string, action: 'accept' | 'reject') => {
         try {
-            // Find the pending friendship
             const { data: follow, error: findError } = await supabase
                 .from('user_follows')
                 .select('id')
@@ -249,9 +320,9 @@ export default function NotificationsScreen() {
         const handlePress = () => {
             handleMarkAsRead(item.id);
             if (item.type === 'friend_request' || item.type === 'friend_accept') {
-                router.push({ pathname: '/user-profile', params: { userId: item.actor_id } });
+                router.push({ pathname: '/user-profile' as any, params: { userId: item.actor_id } });
             } else if (item.post_id) {
-                router.push({ pathname: '/post-detail', params: { postId: item.post_id } });
+                router.push({ pathname: '/post-detail' as any, params: { postId: item.post_id } });
             }
         };
 
@@ -334,7 +405,13 @@ export default function NotificationsScreen() {
                     <Ionicons name="arrow-back" size={26} color={primaryColor} />
                 </TouchableOpacity>
                 <Text style={[styles.headerTitle, { color: textColor }]}>Bildirimler</Text>
-                <View style={{ width: 26 }} />
+                <TouchableOpacity 
+                    onPress={handleDeleteAllNotifications}
+                    disabled={notifications.length === 0}
+                    style={{ opacity: notifications.length === 0 ? 0 : 1 }}
+                >
+                    <Ionicons name="trash-outline" size={24} color={primaryColor} />
+                </TouchableOpacity>
             </View>
 
             {loading && !refreshing ? (

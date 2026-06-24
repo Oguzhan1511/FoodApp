@@ -3,7 +3,7 @@ import { router } from 'expo-router'; // 1. YÖNLENDİRME İÇİN BU EKLENDİ
 import React from 'react';
 import {
   ActivityIndicator,
-  Image,
+  FlatList,
   Platform,
   SafeAreaView,
   ScrollView, // Platform kontrolü için ekli kalsın
@@ -11,8 +11,10 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
+  Alert
 } from 'react-native';
+import { Image } from 'expo-image';
 
 // --- ÖRNEK VERİLER KALDIRILDI ---
 
@@ -20,10 +22,12 @@ import { useFocusEffect } from 'expo-router';
 import CommentBottomSheet from '../../components/CommentBottomSheet';
 import LikesBottomSheet from '../../components/LikesBottomSheet';
 import ShareBottomSheet from '../../components/ShareBottomSheet';
-import { useAuth } from '../AuthContext';
-import { useStory } from '../StoryContext';
-import { useTheme } from '../ThemeContext';
-import { supabase } from '../services/supabaseConfig';
+import { PostItem } from '../../components/PostItem';
+import { useAuth } from '../../context/AuthContext';
+import { useStory } from '../../context/StoryContext';
+import { useTheme } from '../../context/ThemeContext';
+import { supabase } from '../../services/supabaseConfig';
+import * as Notifications from 'expo-notifications';
 
 // ... (imports remain)
 
@@ -86,141 +90,162 @@ export default function HomeScreen() {
       const myId = user?.id;
       if (!myId) return;
 
-      // 1. Takip ettiklerimin ID'lerini bul
-      const { data: followsData } = await supabase
-        .from('user_follows')
-        .select('following_id')
-        .eq('follower_id', myId)
-        .eq('status', 'accepted');
+      // 1 & 2. Takip ettiklerimin ID'lerini paralel olarak bul
+      const [followsRes, dietitianFollowsRes] = await Promise.all([
+        supabase
+          .from('user_follows')
+          .select('following_id')
+          .eq('follower_id', myId)
+          .eq('status', 'accepted'),
+        supabase
+          .from('dietitian_follows')
+          .select('dietitian_id')
+          .eq('follower_id', myId)
+      ]);
 
       const friendIds = new Set<string>();
-      followsData?.forEach((f: any) => {
-        friendIds.add(f.following_id);
-      });
-
-      // 2. Takip ettiğim Diyetisyenlerin ID'lerini bul
-      const { data: dietData } = await supabase
-        .from('dietitian_follows')
-        .select('dietitian_id')
-        .eq('follower_id', myId);
-
-      dietData?.forEach((d: any) => friendIds.add(d.dietitian_id));
-
-      // Kendi gönderilerimizi de görelim
+      followsRes.data?.forEach((f: any) => friendIds.add(f.following_id));
+      dietitianFollowsRes.data?.forEach((d: any) => friendIds.add(d.dietitian_id));
       friendIds.add(myId);
 
       const allIds = Array.from(friendIds);
 
-      if (allIds.length === 0) {
+      // 3. Postları ve Sponsorlu Gönderileri Çek
+      let organicData: any[] = [];
+      if (allIds.length > 0) {
+        const { data } = await supabase
+          .from('posts')
+          .select('id, user_id, image_url, description, likes, created_at, is_recipe, title, calories, tags, is_sponsored, sponsor_budget, sponsor_views')
+          .in('user_id', allIds)
+          .order('created_at', { ascending: false });
+        organicData = data || [];
+      }
+
+      const [sponsoredRes, recentLikesRes] = await Promise.all([
+        supabase
+          .from('posts')
+          .select('id, user_id, image_url, description, likes, created_at, is_recipe, title, calories, tags, is_sponsored, sponsor_budget, sponsor_views')
+          .eq('is_sponsored', true)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('post_likes')
+          .select('post_id')
+          .eq('user_id', myId)
+          .order('created_at', { ascending: false })
+          .limit(20)
+      ]);
+
+      let finalData = organicData;
+      
+      // 3.1 İlgi Alanı Analizi (Top Tags)
+      let topTags: string[] = [];
+      if (recentLikesRes.data && recentLikesRes.data.length > 0) {
+        const likedIds = recentLikesRes.data.map(l => l.post_id);
+        const { data: likedPostsTags } = await supabase
+          .from('posts')
+          .select('tags')
+          .in('id', likedIds);
+          
+        if (likedPostsTags) {
+          const tagCounts: Record<string, number> = {};
+          likedPostsTags.forEach(p => {
+            if (p.tags) {
+              p.tags.split(',').map((t: string) => t.trim().toLowerCase()).forEach((t: string) => {
+                if (t) tagCounts[t] = (tagCounts[t] || 0) + 1;
+              });
+            }
+          });
+          topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+        }
+      }
+
+      // 3.5 Sponsorlu Düzenleme
+      if (sponsoredRes.data) {
+        let activeAds = sponsoredRes.data.filter(p => 
+          (p.sponsor_budget || 0) > (p.sponsor_views || 0) &&
+          !finalData.some(fd => fd.id === p.id)
+        );
+        if (activeAds.length > 0) {
+          if (topTags.length > 0) {
+            activeAds.sort((a, b) => {
+              const aHas = a.tags?.split(',').some((t:any) => topTags.includes(t.trim().toLowerCase())) ? 1 : 0;
+              const bHas = b.tags?.split(',').some((t:any) => topTags.includes(t.trim().toLowerCase())) ? 1 : 0;
+              return bHas - aHas;
+            });
+          }
+
+          // Merge Ads
+          const merged: any[] = [];
+          let adIndex = 0;
+          for (let i = 0; i < finalData.length; i++) {
+            merged.push(finalData[i]);
+            if ((i + 1) % 3 === 0 && adIndex < activeAds.length) {
+              merged.push({ ...activeAds[adIndex++], _is_ad_render: true });
+            }
+          }
+          // Kalan sponsorlu gönderileri sona ekle (veya hiç organik post yoksa direkt bunları göster)
+          while (adIndex < activeAds.length) {
+            merged.push({ ...activeAds[adIndex++], _is_ad_render: true });
+          }
+          finalData = merged;
+        }
+      }
+
+      if (finalData.length === 0) {
         setPosts([]);
         setLoading(false);
         return;
       }
 
-      // 3. Bu ID'lere ait postları çek
-      const { data: postData, error: postError } = await supabase
-        .from('posts')
-        .select('*')
-        .in('user_id', allIds)
-        .order('created_at', { ascending: false });
-
-      if (postError) console.error('Post error:', postError);
-
-      if (!postData || postData.length === 0) {
-        setPosts([]);
-        setLoading(false);
-        return;
-      }
-
-      const postIds = postData.map(p => p.id);
-
-      // 4. Bu postlara ait yorumları çek
-      const { data: commentsData } = await supabase
-        .from('comments')
-        .select('*')
-        .in('post_id', postIds)
-        .order('created_at', { ascending: true });
-
-      // 5. Post sahiplerinin ve yorum yapanların bilgilerini çek
-      const postUserIds = postData.map(p => p.user_id);
-      const commentUserIds = commentsData?.map(c => c.user_id) || [];
-
-      // Tüm benzersiz kullanıcı ID'leri
+      const postIds = finalData.map(p => p.id);
+      
+      // Tüm post ve yorum sahiplerinin ID'lerini topla
+      const { data: allComments } = await supabase.from('comments').select('user_id').in('post_id', postIds);
+      const commentUserIds = allComments?.map(c => c.user_id) || [];
+      const postUserIds = finalData.map(p => p.user_id);
       const allUserIds = [...new Set([...postUserIds, ...commentUserIds])];
 
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, avatar_url')
-        .in('id', allUserIds);
+      // 4, 5, 6, 7. Diğer tüm detayları paralel çek
+      const [commentsRes, profilesRes, dietitiansRes, myLikesRes, savedRes] = await Promise.all([
+        supabase.from('comments').select('id, post_id, user_id, content, created_at, is_hidden').in('post_id', postIds).order('created_at', { ascending: true }),
+        supabase.from('profiles').select('id, username, avatar_url').in('id', allUserIds),
+        supabase.from('dietitians').select('id, username, profile_picture').in('id', allUserIds),
+        supabase.from('post_likes').select('post_id').eq('user_id', myId).in('post_id', postIds),
+        supabase.from('saved_posts').select('post_id').eq('user_id', myId).in('post_id', postIds)
+      ]);
 
-      const { data: dietitians } = await supabase
-        .from('dietitians')
-        .select('id, username, profile_picture')
-        .in('id', allUserIds);
-
-      // Map oluştur
+      // User Map Oluştur
       const userMap: Record<string, { username: string, avatar: string }> = {};
-
-      profiles?.forEach(p => {
-        userMap[p.id] = {
-          username: p.username,
-          avatar: p.avatar_url || `https://ui-avatars.com/api/?name=${p.username}&background=random`
-        };
+      profilesRes.data?.forEach(p => {
+        userMap[p.id] = { username: p.username, avatar: p.avatar_url || `https://ui-avatars.com/api/?name=${p.username}&background=random` };
       });
-
-      dietitians?.forEach(d => {
+      dietitiansRes.data?.forEach(d => {
         if (!userMap[d.id]) {
-          userMap[d.id] = {
-            username: d.username,
-            avatar: d.profile_picture || `https://ui-avatars.com/api/?name=${d.username}&background=random`
-          };
+          userMap[d.id] = { username: d.username, avatar: d.profile_picture || `https://ui-avatars.com/api/?name=${d.username}&background=random` };
         }
       });
 
-      // 6. Beğeni Durumlarını Çek
-      const { data: myLikes } = await supabase
-        .from('post_likes')
-        .select('post_id')
-        .eq('user_id', myId)
-        .in('post_id', postIds);
+      const likedSet = new Set(myLikesRes.data?.map(l => l.post_id));
+      const savedSet = new Set(savedRes.data?.map(s => s.post_id));
 
-      const likedPostIds = new Set(myLikes?.map(l => l.post_id));
-
-      // 7. Veriyi Birleştir
-      // 7. Veriyi Birleştir
-
-      // 7.1 Kaydedilenleri Çek
-      const { data: savedData } = await supabase
-        .from('saved_posts')
-        .select('post_id')
-        .eq('user_id', myId)
-        .in('post_id', postIds);
-
-      const savedPostIds = new Set(savedData?.map(s => s.post_id));
-
-      const enrichedPosts = postData.map(post => {
-        // Bu posta ait yorumları bul ve kullanıcı adlarını ekle
-        const postComments = (commentsData || [])
+      const enrichedPosts = finalData.map(post => {
+        const postComments = (commentsRes.data || [])
           .filter(c => c.post_id === post.id && !c.is_hidden)
-          .map(c => ({
-            ...c,
-            username: userMap[c.user_id]?.username || 'Kullanıcı'
-          }));
+          .map(c => ({ ...c, username: userMap[c.user_id]?.username || 'Kullanıcı' }));
 
         return {
           ...post,
           username: userMap[post.user_id]?.username || 'Kullanıcı',
           userAvatar: userMap[post.user_id]?.avatar,
           time: new Date(post.created_at).toLocaleString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
-          isLiked: likedPostIds.has(post.id),
-          isSaved: savedPostIds.has(post.id),
+          isLiked: likedSet.has(post.id),
+          isSaved: savedSet.has(post.id),
           likeCount: post.likes || 0,
           comments: postComments
         };
       });
 
       setPosts(enrichedPosts);
-
     } catch (e) {
       console.error(e);
     } finally {
@@ -230,7 +255,7 @@ export default function HomeScreen() {
 
 
 
-  const handleToggleSave = async (postId: string, currentSaved: boolean) => {
+  const handleToggleSave = React.useCallback(async (postId: string, currentSaved: boolean) => {
     if (!user) return;
 
     // Optimistik UI
@@ -263,9 +288,9 @@ export default function HomeScreen() {
       console.error("Save error:", error);
       // Revert logic could go here
     }
-  };
+  }, [user]);
 
-  const handleToggleLike = async (postId: string, currentLiked: boolean) => {
+  const handleToggleLike = React.useCallback(async (postId: string, currentLiked: boolean) => {
     if (!user) return;
 
     // 1. Optimistik UI Güncellemesi
@@ -326,37 +351,125 @@ export default function HomeScreen() {
       }
     } catch (error) {
       console.error("Like error:", error);
-      // Hata olursa geri al (Revert)
-      // Basitlik adına burada tekrar fetchFeed yapabiliriz veya state'i geri alabiliriz.
-      // Şimdilik console.log yeterli.
     }
-  };
+  }, [user, posts]);
 
-  // Sağa Kaydırma Hareketi (Kamera açar)
+  // Kaydırma Hareketi (Sağ: Kamera, Sol: Arkadaşlar)
   const panGesture = Gesture.Pan()
-    .activeOffsetX(10) // Hareketin başlaması için min X değişimi
+    .activeOffsetX([-10, 10]) // Hareketin başlaması için min X değişimi
     .onEnd((e) => {
-      if (e.translationX > 50) { // Sağa doğru 50px'den fazla kaydırılırsa
-        runOnJS(router.push)('/camera');
+      if (e.translationX > 50) { // Sağa doğru 50px'den fazla kaydırılırsa (Kamera - Soldan gelir)
+        runOnJS(router.push)('/camera' as any);
+      } else if (e.translationX < -50) { // Sola doğru 50px'den fazla kaydırılırsa (Arkadaşlar - Sağdan gelir)
+        runOnJS(router.push)('/friends' as any);
       }
     });
 
-  const openCommentSheet = (postId: string, ownerId: string) => {
+  const openCommentSheet = React.useCallback((postId: string, ownerId: string) => {
     setActivePost({ id: postId, ownerId });
     setCommentSheetVisible(true);
-  };
+  }, []);
 
-  const openShareSheet = (postId: string) => {
+  const openShareSheet = React.useCallback((postId: string) => {
     setSharePostId(postId);
     setShareSheetVisible(true);
-  };
+  }, []);
 
-  const openLikesSheet = (postId: string) => {
+  const openLikesSheet = React.useCallback((postId: string) => {
     setActiveLikesPostId(postId);
     setLikesSheetVisible(true);
-  };
+  }, []);
 
+  const handleDeletePost = React.useCallback(async (postId: string) => {
+    if (!user) return;
+    try {
+      setPosts(prev => prev.filter(p => p.id !== postId));
+      const { error } = await supabase.from('posts').delete().eq('id', postId);
+      if (error) {
+        throw error;
+      }
+    } catch (e) {
+      console.log('Post delete error', e);
+      Alert.alert('Hata', 'Gönderi silinirken bir hata oluştu.');
+    }
+  }, [user]);
 
+  const renderItem = React.useCallback(({ item }: { item: any }) => (
+    <PostItem
+      post={item}
+      cardColor={cardColor}
+      primaryColor={primaryColor}
+      textColor={textColor}
+      subTextColor={subTextColor}
+      isDark={isDark}
+      currentUserId={user?.id}
+      onToggleLike={handleToggleLike}
+      onToggleSave={handleToggleSave}
+      onOpenCommentSheet={openCommentSheet}
+      onOpenShareSheet={openShareSheet}
+      onOpenLikesSheet={openLikesSheet}
+      onDeletePost={handleDeletePost}
+    />
+  ), [cardColor, primaryColor, textColor, subTextColor, isDark, user?.id, handleToggleLike, handleToggleSave, openCommentSheet, openShareSheet, openLikesSheet, handleDeletePost]);
+
+  const renderHeader = React.useCallback(() => (
+    <View style={[styles.storiesContainer, { backgroundColor: bgColor }]}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 15 }}>
+        {/* Tüm Hikayeler (Önce "Sen", sonra diğerleri) */}
+        {stories.map((storyUser: any) => {
+          const isMe = storyUser.isMe;
+          const hasStory = storyUser.hasStory;
+          const allViewed = storyUser.allViewed;
+
+          return (
+            <View key={storyUser.id} style={styles.storyItem}>
+              <TouchableOpacity 
+                style={[
+                  styles.avatarContainer, 
+                  hasStory ? { borderColor: allViewed ? '#ddd' : primaryColor } : styles.myStoryBorder
+                ]}
+                onPress={() => {
+                  if (hasStory) {
+                    router.push({ pathname: '/story-view' as any, params: { userId: storyUser.id }});
+                  } else if (isMe) {
+                    router.push({ pathname: '/camera' as any, params: { mode: 'HIKAYE' } });
+                  }
+                }}
+              >
+                {/* Görsel Katmanı */}
+                <View style={styles.addStoryContainer}>
+                  <Image 
+                    source={storyUser.avatar} 
+                    style={[styles.storyAvatar, !hasStory && isMe && { opacity: 0.7 }]} 
+                    contentFit="cover"
+                    transition={200}
+                    onError={(e) => console.log("Story Image Load Error:", e)}
+                  />
+                  {!hasStory && isMe && (
+                    <View style={{ 
+                      position: 'absolute', 
+                      bottom: -2, 
+                      right: -2, 
+                      backgroundColor: primaryColor, 
+                      borderRadius: 10,
+                      borderWidth: 2,
+                      borderColor: bgColor
+                    }}>
+                      <Ionicons name="add" size={14} color="#fff" />
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+              <Text style={[styles.storyName, { color: textColor }]} numberOfLines={1}>
+                {isMe ? 'Sen' : storyUser.name}
+              </Text>
+            </View>
+          );
+        })}
+      </ScrollView>
+      <View style={styles.divider} />
+    </View>
+  ), [stories, bgColor, primaryColor, textColor]);
 
   return (
     <GestureDetector gesture={panGesture}>
@@ -371,7 +484,7 @@ export default function HomeScreen() {
               style={{ marginRight: 15 }}
               onPress={() => {
                 setHasUnreadNotifications(false);
-                router.push('/notifications');
+                router.push('/notifications' as any);
               }}
             >
               <View>
@@ -393,191 +506,38 @@ export default function HomeScreen() {
             </TouchableOpacity>
 
             {/* 2. ARKADAŞLAR LİSTESİNE GİDEN BUTON */}
-            <TouchableOpacity onPress={() => router.push('/friends')}>
+            <TouchableOpacity onPress={() => router.push('/friends' as any)}>
               <Ionicons name="people-outline" size={26} color={textColor} />
             </TouchableOpacity>
           </View>
         </View>
-
-        <ScrollView showsVerticalScrollIndicator={false} style={{ backgroundColor: bgColor }}>
-
-          {/* 2. HİKAYELER ALANI (STORIES) */}
-          <View style={styles.storiesContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 15 }}>
-              {stories.map((story) => (
-                <View key={story.id} style={styles.storyItem}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (story.isMe && !story.hasStory) {
-                        router.push({ pathname: '/camera', params: { mode: 'HIKAYE' } }); // Hikaye ekle modu ile git
-                      } else {
-                        router.push({ pathname: '/story-view', params: { userId: story.id } });
-                      }
-                    }}
-                  >
-                    <View style={[
-                      styles.avatarContainer,
-                      story.isMe && !story.hasStory && styles.myStoryBorder,
-                      { borderColor: (story.isMe && !story.hasStory) ? borderColor : primaryColor }
-                    ]}>
-                      {story.isMe && !story.hasStory ? (
-                        <View style={[styles.addStoryContainer, { backgroundColor: isDark ? '#333' : '#fff' }]}>
-                          <Ionicons name="add" size={30} color={primaryColor} />
-                        </View>
-                      ) : (
-                        <Image source={{ uri: story.avatar }} style={styles.storyAvatar} />
-                      )}
-                    </View>
-                  </TouchableOpacity>
-
-                  <Text style={[styles.storyName, { color: textColor }]}>
-                    {story.name}
-                  </Text>
-                </View>
-              ))}
-            </ScrollView>
+        {/* 3. GÖNDERİLER (FEED) */}
+        {loading ? (
+          <View style={{ padding: 20 }}>
+            <ActivityIndicator size="large" color={primaryColor} />
           </View>
-
-          <View style={[styles.divider, { backgroundColor: borderColor }]} />
-
-          {/* 3. GÖNDERİLER (FEED) */}
-          {loading ? (
-            <View style={{ padding: 20 }}>
-              <ActivityIndicator size="large" color={primaryColor} />
-            </View>
-          ) : (
-            <>
-              {posts.length === 0 ? (
-                <View style={{ padding: 40, alignItems: 'center' }}>
-                  <Text style={{ color: subTextColor, textAlign: 'center' }}>
-                    Henüz gönderi yok. Başka kullanıcıları veya diyetisyenleri takip ederek akışını renklendir!
-                  </Text>
-                </View>
-              ) : (
-                posts.map((post) => (
-                  <View key={post.id} style={[styles.postContainer, { backgroundColor: cardColor }]}>
-
-                    {/* Post Başlığı (User info) */}
-                    <View style={styles.postHeader}>
-                      <TouchableOpacity
-                        style={styles.userInfo}
-                        onPress={() => router.push({ pathname: "/user-profile", params: { userId: post.user_id } })}
-                      >
-                        <Image source={{ uri: post.userAvatar }} style={styles.postUserAvatar} />
-                        <View>
-                          <Text style={[styles.userName, { color: primaryColor }]}>{post.username}</Text>
-                          <Text style={[styles.postTime, { color: subTextColor }]}>{post.time}</Text>
-                        </View>
-                      </TouchableOpacity>
-                      <TouchableOpacity>
-                        <Ionicons name="ellipsis-horizontal" size={24} color={subTextColor} />
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Post Görseli - Detaya Git */}
-                    <TouchableOpacity onPress={() => router.push({ pathname: "/post-detail", params: { postId: post.id } })}>
-                      <View style={styles.imageWrapper}>
-                        <Image source={{ uri: post.image_url }} style={styles.postImage} />
-                        {/* Kalori Rozeti */}
-                        {post.calories && (
-                          <View style={styles.kcalBadge}>
-                            <FontAwesome5 name="fire" size={14} color="#FFD700" style={{ marginRight: 5 }} />
-                            <Text style={styles.kcalText}>{post.calories} kcal</Text>
-                          </View>
-                        )}
-                      </View>
-                    </TouchableOpacity>
-
-                    {/* Aksiyon Butonları (Like/Comment/Save) */}
-                    <View style={styles.actionRow}>
-                      <View style={styles.leftActions}>
-                        <TouchableOpacity
-                          style={{ marginRight: 15 }}
-                          onPress={() => handleToggleLike(post.id, post.isLiked)}
-                        >
-                          <Ionicons
-                            name={post.isLiked ? "heart" : "heart-outline"}
-                            size={28}
-                            color={post.isLiked ? primaryColor : textColor}
-                          />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => openCommentSheet(post.id, post.user_id)}>
-                          <Ionicons name="chatbubble-outline" size={26} color={textColor} />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => openShareSheet(post.id)} style={{ marginLeft: 15 }}>
-                          <Ionicons name="paper-plane-outline" size={26} color={textColor} />
-                        </TouchableOpacity>
-                      </View>
-
-                      <TouchableOpacity onPress={() => handleToggleSave(post.id, post.isSaved)}>
-                        <Ionicons
-                          name={post.isSaved ? "bookmark" : "bookmark-outline"}
-                          size={26}
-                          color={textColor}
-                        />
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Beğeni Sayısı */}
-                    {post.likeCount > 0 && (
-                      <TouchableOpacity 
-                        style={{ paddingHorizontal: 10, marginBottom: 5 }}
-                        onPress={() => openLikesSheet(post.id)}
-                      >
-                        <Text style={{ fontWeight: 'bold', color: textColor }}>{post.likeCount} beğenme</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    {/* Açıklama Kısmı */}
-                    <View style={styles.captionContainer}>
-                      <Text style={[styles.captionText, { color: textColor }]}>
-                        <Text style={[styles.boldUserName, { color: primaryColor }]}>{post.username} </Text>
-                        {post.description}
-                      </Text>
-
-                      {/* ETİKETLER */}
-                      {post.tags ? (
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 }}>
-                            {post.tags.split(',').map((tag: string, index: number) => {
-                                const cleanTag = tag.trim();
-                                if(!cleanTag) return null;
-                                return (
-                                    <View key={index} style={{ backgroundColor: isDark ? '#333' : '#f0f0f0', borderRadius: 15, paddingHorizontal: 10, paddingVertical: 4, marginRight: 8, marginBottom: 5 }}>
-                                        <Text style={{ color: isDark ? '#ddd' : '#555', fontSize: 12 }}>#{cleanTag}</Text>
-                                    </View>
-                                );
-                            })}
-                        </View>
-                      ) : null}
-                    </View>
-
-                    {/* Yorumlar Önizleme */}
-                    {post.comments && post.comments.length > 0 && (
-                      <View style={{ paddingHorizontal: 10, marginTop: 5 }}>
-                        <TouchableOpacity onPress={() => openCommentSheet(post.id, post.user_id)}>
-                          <Text style={{ color: subTextColor, marginBottom: 2 }}>
-                            {post.comments.length} yorumun tümünü gör
-                          </Text>
-                        </TouchableOpacity>
-                        {post.comments.filter((c: any) => !c.is_hidden).slice(0, 2).map((comment: any) => (
-                          <View key={comment.id} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                            <Text style={{ fontWeight: 'bold', marginRight: 5, color: textColor, fontSize: 13 }}>
-                              {comment.username ? comment.username.replace(/^@/, '') : 'Kullanıcı'}
-                            </Text>
-                            <Text style={{ color: textColor, fontSize: 13 }}>{comment.content}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    )}
-                  </View>
-                ))
-              )}
-            </>
-          )}
-
-          {/* Altta biraz boşluk bırakalım ki tab barın altında kalmasın */}
-          <View style={{ height: 100 }} />
-        </ScrollView>
+        ) : (
+          <FlatList
+            data={posts}
+            keyExtractor={(item) => item.id}
+            renderItem={renderItem}
+            ListHeaderComponent={renderHeader}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 100 }}
+            // Optimizasyon Ayarları:
+            initialNumToRender={3}      // İlk başta sadece 3 post yükle (Ekrana sığan)
+            maxToRenderPerBatch={3}     // Scroll ettikçe 3'er 3'er çiz
+            windowSize={5}              // Ekranda görünenin 2 üstü, 2 altını hafızada tut
+            removeClippedSubviews={true} // Görünmeyen postları render ağacından sil (Android için harika)
+            ListEmptyComponent={
+              <View style={{ padding: 40, alignItems: 'center' }}>
+                <Text style={{ color: subTextColor, textAlign: 'center' }}>
+                  Henüz gönderi yok. Başka kullanıcıları veya diyetisyenleri takip ederek akışını renklendir!
+                </Text>
+              </View>
+            }
+          />
+        )}
 
         <CommentBottomSheet
           isVisible={commentSheetVisible}

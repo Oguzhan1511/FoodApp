@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.oguzhanozdemir3.foodapp"
+      "bundleIdentifier": "com.oguzhanozdemir3.foodapp",
+      "infoPlist": {
+        "NSMotionUsageDescription": "Bu uygulama günlük kalori yakımınızı hesaplayabilmek için adım sayınıza erişim gerektirir."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +25,8 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.oguzhanozdemir3.foodapp",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "permissions": ["ACTIVITY_RECOGNITION"]
     },
     "web": {
       "output": "static",
@@ -32,6 +36,12 @@
       "expo-router",
       "expo-web-browser",
       "expo-image-picker",
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "Bu uygulama günlük kalori yakımınızı hesaplayabilmek için adım sayınıza erişim gerektirir."
+        }
+      ],
       [
         "expo-splash-screen",
         {

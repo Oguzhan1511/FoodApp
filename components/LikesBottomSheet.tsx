@@ -14,8 +14,8 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
-import { supabase } from '../app/services/supabaseConfig';
-import { useTheme } from '../app/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
+import { useTheme } from '../context/ThemeContext';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -141,7 +141,7 @@ export default function LikesBottomSheet({ isVisible, onClose, postId }: LikesBo
 
     const handleUserPress = (userId: string) => {
         handleClose();
-        router.push({ pathname: '/user-profile', params: { userId } });
+        router.push({ pathname: '/user-profile' as any, params: { userId } });
     };
 
     return (

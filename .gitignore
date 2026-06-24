@@ -49,3 +49,23 @@ debug_view.jpg
 dist/
 build/
 
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.production
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# TFLite model (large binary)
+aiy_food_v1.tflite
+
+# Test scripts
+test-*.ts
+test-*.js
+seed_db.js
+fix_images.js
+scripts/

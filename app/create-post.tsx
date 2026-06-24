@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    Image,
+    Dimensions,
     Keyboard,
     KeyboardAvoidingView,
     Platform,
@@ -18,15 +18,23 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { supabase } from '../services/supabaseConfig';
+import { DynamicImage } from '../components/DynamicImage';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function CreatePostScreen() {
     const router = useRouter();
     const params = useLocalSearchParams();
     const { user } = useAuth();
 
-    const imageUri = params.imageUri as string;
+    const imageUriParam = params.imageUri as string;
+    const imageUrisParam = params.imageUris as string;
+    
+    // Support both single and multiple image parameters
+    const imageUris = imageUrisParam ? imageUrisParam.split(',') : (imageUriParam ? [imageUriParam] : []);
+
     const [caption, setCaption] = useState(params.initialFoodName ? `${params.initialFoodName} yiyorum!` : '');
     const [tags, setTags] = useState('');
     const [loading, setLoading] = useState(false);
@@ -38,37 +46,41 @@ export default function CreatePostScreen() {
     const [ingredients, setIngredients] = useState('');
 
     const handleShare = async () => {
-        if (!imageUri || !user) return;
+        if (imageUris.length === 0 || !user) return;
         setLoading(true);
 
         try {
-            // 1. Storage'a Yükle (Profil fotoğrafı yükleme mantığı ile aynı)
-            const formData = new FormData();
-            formData.append('file', {
-                uri: imageUri,
-                name: `post_${Date.now()}.jpg`,
-                type: 'image/jpeg',
-            } as any);
+            const uploadedUrls: string[] = [];
 
-            // Dosya yolu: user_id/timestamp.jpg
-            const fileName = `${user.id}/${Date.now()}.jpg`;
+            // 1. Storage'a Bütün Fotoğrafları Yükle
+            for (let i = 0; i < imageUris.length; i++) {
+                const uri = imageUris[i];
+                const formData = new FormData();
+                formData.append('file', {
+                    uri: uri,
+                    name: `post_${Date.now()}_${i}.jpg`,
+                    type: 'image/jpeg',
+                } as any);
 
-            const { data: storageData, error: storageError } = await supabase.storage
-                .from('posts')
-                .upload(fileName, formData, {
-                    contentType: 'image/jpeg',
-                    upsert: false // Postlar eşsiz olsun
-                });
+                const fileName = `${user.id}/${Date.now()}_${i}.jpg`;
 
-            if (storageError) throw storageError;
+                const { data: storageData, error: storageError } = await supabase.storage
+                    .from('posts')
+                    .upload(fileName, formData, {
+                        contentType: 'image/jpeg',
+                        upsert: false
+                    });
 
-            // 2. Public URL Al
-            const { data: publicUrlData } = supabase.storage.from('posts').getPublicUrl(fileName);
+                if (storageError) throw storageError;
 
-            // 3. Veritabanına Yaz
+                const { data: publicUrlData } = supabase.storage.from('posts').getPublicUrl(fileName);
+                uploadedUrls.push(publicUrlData.publicUrl);
+            }
+
+            // 3. Veritabanına Yaz (Virgülle ayırarak string olarak kaydet)
             const payload: any = {
                 user_id: user.id,
-                image_url: publicUrlData.publicUrl,
+                image_url: uploadedUrls.join(','),
                 description: caption,
                 likes: 0,
                 is_recipe: isRecipe,
@@ -91,7 +103,7 @@ export default function CreatePostScreen() {
             if (dbError) throw dbError;
 
             Alert.alert("Başarılı", "Gönderiniz paylaşıldı!", [
-                { text: "Tamam", onPress: () => router.replace('/(tabs)/home') }
+                { text: "Tamam", onPress: () => router.replace('/(tabs)/home' as any) }
             ]);
 
         } catch (error: any) {
@@ -102,7 +114,7 @@ export default function CreatePostScreen() {
         }
     };
 
-    if (!imageUri) {
+    if (imageUris.length === 0) {
         return (
             <View style={styles.container}>
                 <Text style={{ color: '#fff' }}>Fotoğraf bulunamadı.</Text>
@@ -137,7 +149,27 @@ export default function CreatePostScreen() {
                         </View>
 
                         <View style={styles.content}>
-                            <Image source={{ uri: imageUri }} style={styles.previewImage} />
+                            <View style={{ borderRadius: 10, overflow: 'hidden' }}>
+                                <ScrollView 
+                                    horizontal 
+                                    pagingEnabled 
+                                    showsHorizontalScrollIndicator={false}
+                                >
+                                    {imageUris.map((uri, index) => (
+                                        <View key={index} style={{ width: SCREEN_WIDTH - 30 }}>
+                                            <DynamicImage 
+                                                uri={uri} 
+                                                style={styles.previewImage} 
+                                            />
+                                            {imageUris.length > 1 && (
+                                                <View style={styles.imageCounter}>
+                                                    <Text style={styles.imageCounterText}>{index + 1}/{imageUris.length}</Text>
+                                                </View>
+                                            )}
+                                        </View>
+                                    ))}
+                                </ScrollView>
+                            </View>
                             <TextInput
                                 style={styles.input}
                                 placeholder="Bir açıklama yaz..."
@@ -221,7 +253,7 @@ const styles = StyleSheet.create({
     userInfo: { paddingHorizontal: 15, paddingTop: 10 },
     usernameText: { color: '#aaa', fontSize: 14, fontStyle: 'italic' },
     content: { padding: 15 },
-    previewImage: { width: '100%', aspectRatio: 4 / 5, borderRadius: 10, backgroundColor: '#111' },
+    previewImage: { width: '100%', aspectRatio: 1, borderRadius: 10, backgroundColor: '#111' },
     input: {
         width: '100%',
         color: '#fff',
@@ -255,5 +287,19 @@ const styles = StyleSheet.create({
         padding: 15,
         marginBottom: 15,
         fontSize: 16
+    },
+    imageCounter: {
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 12,
+    },
+    imageCounterText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: 'bold',
     }
 });

@@ -15,14 +15,14 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { useAuth } from './AuthContext';
-import { useTheme } from './ThemeContext';
-import { supabase } from './services/supabaseConfig';
+import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../services/supabaseConfig';
 
 export default function PaymentScreen() {
     const router = useRouter();
     const params = useLocalSearchParams();
-    const { user } = useAuth();
+    const { user, updateUser } = useAuth();
     const { theme } = useTheme();
     const isDark = theme === 'dark';
 
@@ -39,6 +39,11 @@ export default function PaymentScreen() {
     const [cvv, setCvv] = useState('');
     const [holderName, setHolderName] = useState('');
     const [processing, setProcessing] = useState(false);
+
+    const isPremium = params.type === 'premium';
+    const price = isPremium ? '99.00' : '250.00';
+    const title = isPremium ? 'Premium Üyelik' : 'Diyet Programı';
+    const description = isPremium ? 'Sınırsız Geçmiş Analizi ve İstatistikler' : '7 Günlük Kişiye Özel Diyet Listesi';
 
     const handlePayment = async () => {
         if (!cardNumber || !expiry || !cvv || !holderName) {
@@ -57,6 +62,31 @@ export default function PaymentScreen() {
                     return;
                 }
 
+                if (isPremium) {
+                    // --- PREMIUM PURCHASE LOGIC ---
+                    const { error: profileError } = await supabase
+                        .from('profiles')
+                        .update({ role: 'premium' })
+                        .eq('id', user.id);
+
+                    if (profileError) throw profileError;
+
+                    // Update local auth context state immediately
+                    updateUser({ role: 'premium' });
+
+                    Alert.alert("Tebrikler!", "Artık Premium üyesiniz! Tüm istatistiklere erişebilirsiniz.", [
+                        {
+                            text: "Harika",
+                            onPress: () => {
+                                router.dismissAll();
+                                router.replace('/(tabs)/tracking' as any);
+                            }
+                        }
+                    ]);
+                    return;
+                }
+
+                // --- DIET PLAN PURCHASE LOGIC ---
                 const planJson = params.planData as string;
                 if (!planJson) {
                     Alert.alert("Hata", "Diyet planı verisi bulunamadı.");
@@ -71,7 +101,11 @@ export default function PaymentScreen() {
                     .from('diet_plans')
                     .insert({
                         user_id: user.id,
-                        plan_data: planData,
+                        plan_data: {
+                            ...planData,
+                            purchased_amount: 250,
+                            purchased_dietitian_id: params.dietitianId || null
+                        },
                         created_at: new Date().toISOString()
                     })
                     .select()
@@ -79,7 +113,15 @@ export default function PaymentScreen() {
 
                 if (planError) throw planError;
 
-                // 2. Initialize diet_progress table
+                // 2. Schedule End Notification (7 days later)
+                try {
+                    const { notificationService } = require('../services/notificationService');
+                    await notificationService.schedulePlanEndNotification(7);
+                } catch (e) {
+                    console.log("Notification scheduling error:", e);
+                }
+
+                // 3. Initialize diet_progress table
                 const { error: progressError } = await supabase
                     .from('diet_progress')
                     .insert({
@@ -122,7 +164,7 @@ export default function PaymentScreen() {
                         text: "Tamam",
                         onPress: () => {
                             router.dismissAll();
-                            router.replace('/(tabs)/dietitian'); // Or redirect to specific page
+                            router.replace('/(tabs)/dietitian' as any); // Or redirect to specific page
                         }
                     }
                 ]);
@@ -153,9 +195,9 @@ export default function PaymentScreen() {
                 <ScrollView contentContainerStyle={styles.content}>
 
                     <View style={[styles.summaryCard, { backgroundColor: cardBg }]}>
-                        <Text style={[styles.summaryTitle, { color: primaryColor }]}>Diyet Programı</Text>
-                        <Text style={[styles.priceText, { color: textColor }]}>₺250.00</Text>
-                        <Text style={{ color: subTextColor, marginTop: 5 }}>7 Günlük Kişiye Özel Diyet Listesi</Text>
+                        <Text style={[styles.summaryTitle, { color: primaryColor }]}>{title}</Text>
+                        <Text style={[styles.priceText, { color: textColor }]}>₺{price}</Text>
+                        <Text style={{ color: subTextColor, marginTop: 5 }}>{description}</Text>
                     </View>
 
                     <Text style={[styles.sectionTitle, { color: textColor }]}>Kart Bilgileri</Text>
