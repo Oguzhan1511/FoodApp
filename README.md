@@ -1,106 +1,106 @@
-# 🥗 NutriVision
+# 🥗 FoodApp
 
-**AI-powered food recognition & nutrition tracking mobile application**
+**Yapay Zeka Destekli Yemek Tanıma ve Beslenme Takip Mobil Uygulaması**
 
-NutriVision is a cross-platform mobile app (iOS & Android) built with React Native and Expo. It uses a TensorFlow Lite model to identify food from photos, tracks daily nutrition, connects users with dietitians, and includes a social health community.
-
----
-
-## 📱 Features
-
-- 🤖 **AI Food Recognition** — Identify 2,023+ food categories from a photo via Google AIY Food V1 TFLite model
-- 📊 **Nutrition Tracking** — Daily calorie balance, macro tracking (protein, fat, carbs), food & water log
-- ⚖️ **Weight & Activity** — Weight history charts, step counter (pedometer), exercise log
-- 👥 **Social Feed** — Posts, stories (24h), likes, comments, follow system, discover
-- 💬 **Dietitian Chat** — Real-time messaging, diet plan creation & assignment
-- 🏆 **Gamification** — Streaks, achievement badges, progress charts (7/30/90/180 days)
-- 🔔 **Push Notifications** — Likes, comments, messages, diet reminders
-- 💎 **Premium Subscription** — Extended history and advanced analytics
-- 🖥️ **Admin Panel** — Web dashboard for managing users, AI logs, and dietitian approvals
+FoodApp; React Native ve Expo ile geliştirilmiş, iOS ve Android uyumlu çapraz platform bir mobil uygulamadır. TensorFlow Lite modeli kullanarak fotoğraflardan yemek tanımlama, günlük beslenme takibi, diyetisyen danışmanlığı ve sosyal sağlık topluluğu özelliklerini tek çatı altında sunar.
 
 ---
 
-## 🏗️ Tech Stack
+## 📱 Özellikler
 
-| Layer | Technology |
+- 🤖 **Yapay Zeka Yemek Tanıma** — Google AIY Food V1 TFLite modeli ile 2.023+ yemek kategorisini fotoğraftan tanımlama
+- 📊 **Beslenme Takibi** — Günlük kalori dengesi, makro takibi (protein, yağ, karbonhidrat), yemek ve su günlüğü
+- ⚖️ **Kilo ve Aktivite** — Kilo geçmişi grafikleri, adımsayar, egzersiz günlüğü
+- 👥 **Sosyal Akış** — Gönderiler, hikâyeler (24 saat), beğeniler, yorumlar, takip sistemi, keşfet
+- 💬 **Diyetisyen Sohbeti** — Gerçek zamanlı mesajlaşma, diyet planı oluşturma ve atama
+- 🏆 **Oyunlaştırma** — Seri sayaçları, başarı rozetleri, ilerleme grafikleri (7/30/90/180 gün)
+- 🔔 **Anlık Bildirimler** — Beğeni, yorum, mesaj ve diyet hatırlatıcıları
+- 💎 **Premium Abonelik** — Genişletilmiş geçmiş ve gelişmiş analiz
+- 🖥️ **Yönetici Paneli** — Kullanıcı, yapay zeka günlükleri ve diyetisyen onayı yönetimi
+
+---
+
+## 🏗️ Teknoloji Yığını
+
+| Katman | Teknoloji |
 |---|---|
-| Mobile Framework | React Native 0.81.5 + Expo SDK 54 |
-| Language (Frontend) | TypeScript 5.9.2 |
-| Routing | Expo Router 6 (file-based) |
-| AI Backend | Python 3.10 + FastAPI + TFLite (`ai-edge-litert`) |
-| AI Model | Google AIY Food V1 (2,023 food categories) |
-| Database | Supabase (PostgreSQL + Realtime + Storage) |
-| Authentication | Firebase Auth (email/password + Google OAuth) |
-| Local Storage | AsyncStorage |
-| Notifications | Expo Notifications |
-| Tunnel (dev) | ngrok |
-| Admin Panel | React + Vite (TypeScript) |
+| Mobil Çerçeve | React Native 0.81.5 + Expo SDK 54 |
+| Dil (Ön Uç) | TypeScript 5.9.2 |
+| Yönlendirme | Expo Router 6 (dosya tabanlı) |
+| Yapay Zeka Arka Ucu | Python 3.10 + FastAPI + TFLite (`ai-edge-litert`) |
+| Yapay Zeka Modeli | Google AIY Food V1 (2.023 yemek kategorisi) |
+| Veritabanı | Supabase (PostgreSQL + Realtime + Storage) |
+| Kimlik Doğrulama | Firebase Auth (e-posta/parola + Google OAuth) |
+| Yerel Depolama | AsyncStorage |
+| Bildirimler | Expo Notifications |
+| Tünel (Geliştirme) | ngrok |
+| Yönetici Paneli | React + Vite (TypeScript) |
 
 ---
 
-## 📂 Project Structure
+## 📂 Proje Yapısı
 
 ```
-foodapp/
-├── app/                    # Expo Router screens
-│   ├── (tabs)/             # Bottom tab screens
-│   │   ├── home.tsx        # Social feed
-│   │   ├── tracking.tsx    # Nutrition dashboard
-│   │   ├── profile.tsx     # User profile
-│   │   ├── dietitian.tsx   # Dietitian directory
-│   │   └── discover.tsx    # Explore / trending
-│   ├── camera.tsx          # AI food analysis
-│   ├── chat.tsx            # Real-time messaging
-│   ├── food-log.tsx        # Manual food entry
-│   ├── weight-tracking.tsx # Weight history
-│   ├── login.tsx           # Authentication screens
-│   └── _layout.tsx         # Root layout & providers
+FoodApp/
+├── app/                        # Expo Router ekranları
+│   ├── (tabs)/                 # Alt sekme ekranları
+│   │   ├── home.tsx            # Sosyal akış
+│   │   ├── tracking.tsx        # Beslenme gösterge paneli
+│   │   ├── profile.tsx         # Kullanıcı profili
+│   │   ├── dietitian.tsx       # Diyetisyen dizini
+│   │   └── discover.tsx        # Keşfet / Trend içerikler
+│   ├── camera.tsx              # Yapay zeka yemek analizi
+│   ├── chat.tsx                # Gerçek zamanlı mesajlaşma
+│   ├── food-log.tsx            # Manuel yemek girişi
+│   ├── weight-tracking.tsx     # Kilo geçmişi
+│   ├── login.tsx               # Kimlik doğrulama ekranları
+│   └── _layout.tsx             # Kök düzen ve sağlayıcılar
 ├── context/
-│   ├── AuthContext.tsx     # Firebase auth state
-│   ├── ThemeContext.tsx    # Dark/light theme
-│   └── StoryContext.tsx    # Story management
+│   ├── AuthContext.tsx         # Firebase kimlik doğrulama durumu
+│   ├── ThemeContext.tsx        # Koyu/açık tema
+│   └── StoryContext.tsx        # Hikâye yönetimi
 ├── services/
-│   ├── firebaseConfig.ts   # Firebase initialization
-│   ├── supabaseConfig.ts   # Supabase client
-│   ├── apiConfig.ts        # FastAPI base URL
-│   ├── scraperService.ts   # Nutrition data fetcher
-│   └── notificationService.ts
-├── components/             # Reusable UI components
-├── admin-panel/            # Web admin dashboard (Vite)
-├── main.py                 # FastAPI AI inference server
-├── model.tflite            # Lightweight TFLite model
-├── aiy_food_v1.tflite      # Full AIY Food V1 model
-├── aiy_food_labels.txt     # 2,023 food category labels
-└── requirements.txt        # Python dependencies
+│   ├── firebaseConfig.ts       # Firebase başlatma
+│   ├── supabaseConfig.ts       # Supabase istemcisi
+│   ├── apiConfig.ts            # FastAPI temel URL'si
+│   ├── scraperService.ts       # Besin değeri veri çekici
+│   └── notificationService.ts  # Bildirim servisi
+├── components/                 # Yeniden kullanılabilir UI bileşenleri
+├── admin-panel/                # Web yönetici paneli (Vite)
+├── main.py                     # FastAPI yapay zeka çıkarım sunucusu
+├── model.tflite                # Hafif TFLite modeli
+├── aiy_food_v1.tflite          # Tam AIY Food V1 modeli
+├── aiy_food_labels.txt         # 2.023 yemek kategorisi etiketi
+└── requirements.txt            # Python bağımlılıkları
 ```
 
 ---
 
-## ⚙️ Prerequisites
+## ⚙️ Ön Koşullar
 
-Make sure the following are installed on your machine:
+Sisteminizde aşağıdakilerin kurulu olduğundan emin olun:
 
-| Tool | Version | Install |
+| Araç | Sürüm | Kurulum |
 |---|---|---|
 | Node.js | 18+ LTS | https://nodejs.org |
-| npm | 9+ | Comes with Node.js |
+| npm | 9+ | Node.js ile birlikte gelir |
 | Python | 3.10+ | https://python.org |
-| Expo CLI | Latest | `npm install -g expo-cli` |
-| ngrok | Latest | https://ngrok.com/download |
+| Expo CLI | En Son | `npm install -g expo-cli` |
+| ngrok | En Son | https://ngrok.com/download |
 | Git | 2.38+ | https://git-scm.com |
 
-**For iOS testing:**
-- macOS with Xcode 15+ installed
-- iOS Simulator or a physical iPhone (iOS 15+)
+**iOS testi için:**
+- Xcode 15+ yüklü macOS
+- iOS Simülatör veya fiziksel iPhone (iOS 15+)
 
-**For Android testing:**
-- Android Studio with an emulator (API 29+) OR a physical Android device (Android 10+)
+**Android testi için:**
+- Android Studio (API 29+ emülatör) VEYA fiziksel Android cihaz (Android 10+)
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Kurulum ve Başlangıç
 
-### 1. Clone the Repository
+### 1. Depoyu Klonla
 
 ```bash
 git clone https://github.com/Oguzhan1511/FoodApp.git
@@ -109,38 +109,39 @@ cd FoodApp
 
 ---
 
-### 2. Set Up Environment Variables
+### 2. Ortam Değişkenlerini Ayarla
 
-Create a `.env` file in the root directory:
+Proje kök dizininde `.env` dosyası oluştur:
 
 ```bash
-cp .env.example .env   # if .env.example exists, otherwise create manually
+# .env dosyasını manuel olarak oluştur
+touch .env
 ```
 
-Edit `.env` with your credentials:
+Aşağıdaki içeriği kendi bilgilerinle doldur:
 
 ```env
 # Supabase
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+EXPO_PUBLIC_SUPABASE_URL=https://proje-adiniz.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=supabase-anon-key
 
 # Firebase
-EXPO_PUBLIC_FIREBASE_API_KEY=your-firebase-api-key
-EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-EXPO_PUBLIC_FIREBASE_PROJECT_ID=your-firebase-project-id
-EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
-EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
-EXPO_PUBLIC_FIREBASE_APP_ID=your-firebase-app-id
+EXPO_PUBLIC_FIREBASE_API_KEY=firebase-api-key
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=proje-adiniz.firebaseapp.com
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=firebase-proje-id
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=proje-adiniz.appspot.com
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=sender-id
+EXPO_PUBLIC_FIREBASE_APP_ID=firebase-app-id
 
-# FastAPI (will be updated with ngrok URL at runtime)
+# FastAPI (ngrok başlatıldıktan sonra güncellenecek)
 EXPO_PUBLIC_API_URL=http://localhost:8000
 ```
 
-> ⚠️ **Never commit `.env` to version control.** It is already listed in `.gitignore`.
+> ⚠️ `.env` dosyasını asla Git'e yükleme. `.gitignore` tarafından zaten hariç tutulmaktadır.
 
 ---
 
-### 3. Install Mobile App Dependencies
+### 3. Mobil Uygulama Bağımlılıklarını Kur
 
 ```bash
 npm install
@@ -148,9 +149,9 @@ npm install
 
 ---
 
-### 4. Set Up the Python AI Backend
+### 4. Python Yapay Zeka Arka Ucunu Ayarla
 
-#### 4a. Create a virtual environment
+#### 4a. Sanal ortam oluştur
 
 ```bash
 python3 -m venv venv
@@ -158,44 +159,44 @@ source venv/bin/activate        # macOS/Linux
 # venv\Scripts\activate         # Windows
 ```
 
-#### 4b. Install Python dependencies
+#### 4b. Python bağımlılıklarını kur
 
 ```bash
 pip install fastapi uvicorn ai-edge-litert numpy Pillow python-multipart
 ```
 
-Or if a `requirements.txt` exists:
+Veya `requirements.txt` varsa:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 4c. Verify model files
+#### 4c. Model dosyalarını kontrol et
 
-Make sure these files exist in the project root:
+Proje kök dizininde şu dosyaların bulunduğunu doğrula:
 
 ```bash
 ls -lh *.tflite aiy_food_labels.txt
 ```
 
-Expected output:
+Beklenen çıktı:
 ```
 -rw-r--r--  aiy_food_labels.txt   (~45 KB)
 -rw-r--r--  aiy_food_v1.tflite    (~21 MB)
--rw-r--r--  model.tflite           (~2.6 MB)
+-rw-r--r--  model.tflite          (~2.6 MB)
 ```
 
-> The TFLite model files are **not included in the repository** (too large). Contact the project maintainer or download from the [Google AIY Food V1 model page](https://www.tensorflow.org/lite/models).
+> TFLite model dosyaları depoya dahil edilmemiştir (boyut nedeniyle). Proje sahibiyle iletişime geçin veya [Google AIY Food V1 model sayfasından](https://www.tensorflow.org/lite/models) indirin.
 
 ---
 
-## ▶️ Running the Project
+## ▶️ Projeyi Çalıştırma
 
-You need **3 terminals** running simultaneously:
+Projeyi çalıştırmak için **3 ayrı terminal** açman gerekir:
 
 ---
 
-### Terminal 1 — Start the AI Backend Server
+### Terminal 1 — Yapay Zeka Arka Uç Sunucusunu Başlat
 
 ```bash
 cd FoodApp
@@ -203,66 +204,68 @@ source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Expected output:
+Beklenen çıktı:
 ```
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 INFO:     Application startup complete.
 ```
 
-Test the server is working:
+Sunucunun çalıştığını test et:
 ```bash
 curl http://localhost:8000
-# Expected: {"message":"NutriVision API running"}
+# Beklenen: {"message":"NutriVision API running"}
 ```
 
 ---
 
-### Terminal 2 — Start ngrok Tunnel
+### Terminal 2 — ngrok Tüneli Başlat
 
-The mobile app cannot reach `localhost` directly. ngrok creates a public HTTPS tunnel:
+Mobil uygulama `localhost`'a doğrudan erişemez. ngrok kamuya açık bir HTTPS tüneli oluşturur:
 
 ```bash
 ngrok http 8000
 ```
 
-Expected output:
+Beklenen çıktı:
 ```
 Forwarding   https://abc123.ngrok-free.app -> http://localhost:8000
 ```
 
-**Copy the `https://` URL** and update your `.env`:
+**`https://` URL'sini kopyala** ve `.env` dosyasını güncelle:
 
 ```env
 EXPO_PUBLIC_API_URL=https://abc123.ngrok-free.app
 ```
 
-> ⚠️ The ngrok URL changes every time you restart ngrok (free plan). Update `.env` and restart the Expo app when this happens.
+Ardından Expo uygulamasını yeniden başlat.
+
+> ⚠️ ngrok ücretsiz planda her yeniden başlatmada URL değişir. Bu durumda `.env`'i güncelleyip Expo'yu yeniden başlatman gerekir.
 
 ---
 
-### Terminal 3 — Start the Mobile App
+### Terminal 3 — Mobil Uygulamayı Başlat
 
 ```bash
 cd FoodApp
 npx expo start
 ```
 
-Then choose how to run:
+Ardından nasıl çalıştırmak istediğini seç:
 
-| Key | Action |
+| Tuş | İşlem |
 |---|---|
-| `i` | Open in iOS Simulator |
-| `a` | Open in Android Emulator |
-| Scan QR | Open in Expo Go app on physical device |
+| `i` | iOS Simülatörde aç |
+| `a` | Android Emülatörde aç |
+| QR Tara | Fiziksel cihazda Expo Go ile aç |
 
-**Using Expo Go (physical device):**
-1. Download **Expo Go** from App Store or Google Play
-2. Make sure your phone and computer are on the **same Wi-Fi network**
-3. Scan the QR code shown in the terminal
+**Expo Go ile (Fiziksel Cihaz):**
+1. App Store veya Google Play'den **Expo Go** uygulamasını indir
+2. Telefonun ve bilgisayarın **aynı Wi-Fi ağında** olduğundan emin ol
+3. Terminalde görünen QR kodu tara
 
 ---
 
-## 🖥️ Running the Admin Panel
+## 🖥️ Yönetici Panelini Çalıştırma
 
 ```bash
 cd admin-panel
@@ -270,50 +273,49 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+Tarayıcıda http://localhost:5173 adresini aç.
 
-**Admin credentials** are managed via Firebase Authentication. Create an admin user in your Firebase console and set `role = 'admin'` in the Supabase `users` table.
+**Yönetici hesabı:** Firebase Authentication üzerinden kullanıcı oluştur ve Supabase `users` tablosunda `role = 'admin'` olarak ayarla.
 
 ---
 
-## 🔥 Firebase Setup
+## 🔥 Firebase Kurulumu
 
-1. Go to [Firebase Console](https://console.firebase.google.com)
-2. Create a new project
-3. Enable **Authentication** → Sign-in methods:
-   - Email/Password ✅
+1. [Firebase Console](https://console.firebase.google.com)'a git
+2. Yeni bir proje oluştur
+3. **Authentication → Oturum açma yöntemleri** altında şunları etkinleştir:
+   - E-posta/Parola ✅
    - Google ✅
-4. Go to Project Settings → Your apps → Add a **Web app**
-5. Copy the config values to your `.env` file
-6. In the Firebase console, go to **Authentication → Settings → Authorized domains** and add your ngrok domain
+4. Proje Ayarları → Uygulamalar → **Web uygulaması ekle**
+5. Yapılandırma değerlerini `.env` dosyasına kopyala
+6. **Authentication → Ayarlar → Yetkili alan adları** kısmına ngrok alan adını ekle
 
 ---
 
-## 🗄️ Supabase Setup
+## 🗄️ Supabase Kurulumu
 
-1. Go to [Supabase](https://supabase.com) and create a new project
-2. Go to **SQL Editor** and run the schema to create all tables:
+1. [Supabase](https://supabase.com)'e git ve yeni proje oluştur
+2. **SQL Editör**'ü açarak aşağıdaki tabloları oluşturan şemayı çalıştır:
    - `users`, `posts`, `comments`, `likes`, `followers`
    - `stories`, `story_views`, `conversations`, `messages`
    - `diet_plans`, `weight_entries`, `water_entries`
    - `analysis_logs`, `analysis_feedback`, `notifications`
-3. Enable **Row Level Security (RLS)** on all tables
-4. Copy your **Project URL** and **anon public key** to `.env`
-5. Go to **Storage** → Create a bucket named `media` (set to public)
+3. Tüm tablolarda **Row Level Security (RLS)** aktif et
+4. **Proje URL'si** ve **anon public key**'i `.env` dosyasına kopyala
+5. **Storage** → `media` adında yeni bir bucket oluştur (public olarak ayarla)
 
 ---
 
-## 🧪 Testing the AI Endpoint
+## 🧪 Yapay Zeka Uç Noktasını Test Etme
 
-Once the FastAPI server and ngrok are running, test the `/predict` endpoint:
+FastAPI sunucusu ve ngrok çalışırken `/predict` uç noktasını şu şekilde test edebilirsin:
 
 ```bash
-# Test with a food image
-curl -X POST https://your-ngrok-url.ngrok-free.app/predict \
-  -F "file=@/path/to/food-image.jpg"
+curl -X POST https://ngrok-url.ngrok-free.app/predict \
+  -F "file=@/path/to/yemek-fotografi.jpg"
 ```
 
-Expected response:
+Beklenen yanıt:
 ```json
 {
   "status": "success",
@@ -336,42 +338,42 @@ Expected response:
 
 ---
 
-## 🐛 Common Issues & Fixes
+## 🐛 Sık Karşılaşılan Sorunlar ve Çözümleri
 
-### ❌ `Error: Port 8000 already in use`
+### ❌ `Error: Port 8000 already in use` (Port zaten kullanımda)
 
 ```bash
 lsof -ti:8000 | xargs kill -9
 ```
 
-Then restart the FastAPI server.
+Ardından FastAPI sunucusunu yeniden başlat.
 
 ---
 
-### ❌ `AI analysis returns "Server Error"` in the app
+### ❌ Uygulamada yapay zeka analizi "Sunucu Hatası" veriyor
 
-The ngrok session has expired. Restart ngrok and update `EXPO_PUBLIC_API_URL` in `.env`, then restart the Expo app.
+ngrok oturumunun süresi dolmuştur. ngrok'u yeniden başlat, `.env` dosyasındaki `EXPO_PUBLIC_API_URL`'yi güncelle ve Expo'yu yeniden başlat.
 
 ---
 
-### ❌ `Cannot parse server response` / `Unexpected token '<'`
+### ❌ `Sunucu JSON yanıtı döndürmedi` hatası
 
-The app received an HTML error page instead of JSON. This means the ngrok URL is wrong or the FastAPI server is not running. Check:
-1. Is `uvicorn` running? (`Terminal 1`)
-2. Is the ngrok URL in `.env` correct? (`Terminal 2`)
-3. Did you restart Expo after updating `.env`?
+Uygulama JSON yerine HTML hata sayfası aldı. Şunları kontrol et:
+1. `uvicorn` çalışıyor mu? (Terminal 1)
+2. `.env` dosyasındaki ngrok URL'si doğru mu? (Terminal 2)
+3. `.env` güncellendikten sonra Expo yeniden başlatıldı mı?
 
 ---
 
 ### ❌ `Firebase: Error (auth/invalid-api-key)`
 
-Your Firebase API key in `.env` is incorrect or missing. Double-check `EXPO_PUBLIC_FIREBASE_API_KEY`.
+`.env` dosyasındaki Firebase API anahtarı hatalı veya eksik. `EXPO_PUBLIC_FIREBASE_API_KEY` değerini kontrol et.
 
 ---
 
-### ❌ Stories not showing on Android
+### ❌ Android'de hikâyeler görüntülenmiyor
 
-This is a known URI encoding issue on Android. Make sure you are using the latest version of `create-story.tsx` which includes URI normalization.
+Bu, Android'de URI kodlama farklılığından kaynaklanan bilinen bir sorundur. `create-story.tsx` dosyasının URI normalleştirmesi içeren en güncel sürümünü kullandığından emin ol.
 
 ---
 
@@ -384,7 +386,7 @@ pip install ai-edge-litert
 
 ---
 
-## 📦 Building for Production
+## 📦 Üretim Derlemesi (Production Build)
 
 ### iOS
 
@@ -398,26 +400,27 @@ npx eas build --platform ios
 npx eas build --platform android
 ```
 
-> Requires an [Expo EAS account](https://expo.dev/eas). Run `npm install -g eas-cli` first.
+> [Expo EAS hesabı](https://expo.dev/eas) gereklidir. Önce `npm install -g eas-cli` komutunu çalıştır.
 
 ---
 
-## 🌍 Sustainable Development Goals
+## 🌍 Sürdürülebilir Kalkınma Amaçları
 
-This project contributes to:
-- **SDG 4.4** — Enabling dietitians to work remotely as independent professionals
-- **SDG 8.2** — Applying AI and mobile technology to increase economic productivity in the health sector
+Bu proje aşağıdaki BM Sürdürülebilir Kalkınma Amaçları ile örtüşmektedir:
 
----
-
-## 📄 License
-
-This project was developed as a graduation thesis project at [University Name], 2025–2026.  
-All rights reserved © Oğuzhan Özdemir.
+- **SKA 4.4** — Diyetisyenlerin bağımsız profesyoneller olarak uzaktan çalışabilmesini sağlama
+- **SKA 8.2** — Sağlık sektöründe ekonomik verimliliği artırmak için yapay zeka ve mobil teknoloji kullanımı
 
 ---
 
-## 👤 Author
+## 📄 Lisans
+
+Bu proje [Üniversite Adı] mezuniyet tezi kapsamında 2025–2026 döneminde geliştirilmiştir.  
+Tüm hakları saklıdır © Oğuzhan Özdemir.
+
+---
+
+## 👤 Geliştirici
 
 **Oğuzhan Özdemir**  
 GitHub: [@Oguzhan1511](https://github.com/Oguzhan1511)
